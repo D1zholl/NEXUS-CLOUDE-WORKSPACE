@@ -1,0 +1,340 @@
+/* Плавающая очередь передач (Cloud Storage). */
+
+.transfer-drawer {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  width: min(400px, calc(100vw - 28px));
+  max-height: min(62vh, 560px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-strong);
+  background: color-mix(in srgb, var(--surface-strong) 92%, transparent);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(18px);
+  animation: transfer-in 0.18s var(--ease);
+}
+
+.transfer-drawer--collapsed {
+  width: min(340px, calc(100vw - 28px));
+}
+
+@keyframes transfer-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.transfer-drawer__head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 11px 9px 13px;
+}
+
+.transfer-drawer__badge {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.24);
+}
+
+.transfer-drawer__badge svg {
+  width: 16px;
+  height: 16px;
+}
+
+.transfer-drawer__badge.is-done {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.18);
+}
+
+.transfer-drawer__title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.transfer-drawer__meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.transfer-drawer__meta .is-error {
+  color: var(--danger);
+}
+
+.transfer-drawer__meter {
+  height: 3px;
+  flex: none;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.transfer-drawer__meter .meter__fill {
+  height: 100%;
+  transition: width 0.35s var(--ease);
+}
+
+.meter__fill.is-ok {
+  background: linear-gradient(90deg, var(--accent), #3dffb0);
+}
+
+.transfer-drawer__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 10px 4px 13px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.transfer-drawer__body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.transfer-drawer__body::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background-clip: padding-box;
+  background-color: rgba(var(--accent-rgb), 0.3);
+}
+
+.transfer-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px 9px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(5, 12, 24, 0.38);
+}
+
+.transfer-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.transfer-group__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-label);
+}
+
+.transfer-group__row .mono {
+  color: var(--text-secondary);
+  font-size: 10.5px;
+}
+
+.transfer-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid rgba(var(--danger-rgb), 0.32);
+  border-radius: var(--radius-sm);
+  background: rgba(var(--danger-rgb), 0.08);
+  color: var(--text-label);
+  font-size: 11.5px;
+}
+
+.transfer-alert svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--danger);
+}
+
+.transfer-section-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 3px 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.transfer-section-label.is-error {
+  color: var(--danger);
+}
+
+.transfer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 3px;
+}
+
+.transfer-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(5, 12, 24, 0.42);
+}
+
+.transfer-item--done {
+  border-color: rgba(var(--accent-rgb), 0.2);
+  background: rgba(var(--accent-rgb), 0.055);
+}
+
+.transfer-item--failed,
+.transfer-item--conflict {
+  border-color: rgba(var(--danger-rgb), 0.28);
+  background: rgba(var(--danger-rgb), 0.045);
+}
+
+.transfer-item__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.transfer-item__row > svg {
+  margin-top: 2px;
+  flex: none;
+}
+
+.transfer-item__row > svg.is-ok {
+  color: var(--accent);
+}
+
+.transfer-item__row > svg.is-error {
+  color: var(--danger);
+}
+
+.transfer-item__dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.55);
+}
+
+.transfer-item__name {
+  min-width: 0;
+}
+
+.transfer-item__link {
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 550;
+  text-align: left;
+}
+
+.transfer-item__link:not(:disabled):hover {
+  color: var(--accent);
+}
+
+.transfer-item__link:disabled {
+  cursor: default;
+}
+
+.transfer-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+}
+
+.transfer-item__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-top: -4px;
+  margin-right: -4px;
+}
+
+.transfer-item__actions .btn {
+  height: 27px;
+  padding: 0 7px;
+  font-size: 11px;
+}
+
+.transfer-item__actions .btn--sm.btn--icon {
+  width: 27px;
+}
+
+.transfer-item__meter {
+  height: 3px;
+}
+
+.transfer-item__error {
+  padding-left: 15px;
+  color: var(--danger);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.transfer-drawer__note {
+  padding: 1px 2px 4px;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+}
+
+.transfer-drawer__foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 11px 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+@media (max-width: 640px) {
+  .transfer-drawer {
+    right: 12px;
+    bottom: 12px;
+    width: calc(100vw - 24px);
+    max-height: 54vh;
+  }
+
+  .transfer-drawer--collapsed {
+    width: calc(100vw - 24px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transfer-drawer {
+    animation: none;
+  }
+}

@@ -1,0 +1,89 @@
+/* Источник: app.css, строки 1069–1157. */
+/* ---------- 3D-фон ---------- */
+.bg-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(60% 55% at 72% 18%, rgba(88, 212, 255, 0.06), transparent 70%),
+    radial-gradient(55% 50% at 18% 82%, rgba(255, 79, 216, 0.05), transparent 70%),
+    var(--bg-primary);
+  pointer-events: none;
+}
+.bg-layer canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+.bg-layer__vignette {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 90% at 50% 40%, transparent 40%, rgba(2, 6, 13, 0.55) 100%),
+    linear-gradient(
+      180deg,
+      rgba(2, 6, 13, 0.25),
+      transparent 22%,
+      transparent 78%,
+      rgba(2, 6, 13, 0.5)
+    );
+  pointer-events: none;
+}
+.bg-layer--preview {
+  position: absolute;
+  border-radius: inherit;
+}
+.bg-layer--preview,
+.bg-layer--preview canvas {
+  pointer-events: auto;
+}
+.bg-layer--preview canvas {
+  cursor: crosshair;
+}
+.bg-fallback {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1.2px 1.2px at 14% 24%, rgba(255, 255, 255, 0.75), transparent 60%),
+    radial-gradient(1px 1px at 66% 14%, rgba(255, 255, 255, 0.55), transparent 60%),
+    radial-gradient(1.6px 1.6px at 82% 62%, rgba(255, 255, 255, 0.7), transparent 60%),
+    radial-gradient(1px 1px at 34% 76%, rgba(255, 255, 255, 0.5), transparent 60%),
+    radial-gradient(60% 50% at 70% 25%, rgba(139, 92, 246, 0.18), transparent 70%),
+    radial-gradient(55% 45% at 22% 80%, rgba(88, 212, 255, 0.12), transparent 70%),
+    var(--bg-primary);
+  background-size:
+    420px 420px,
+    420px 420px,
+    420px 420px,
+    420px 420px,
+    100% 100%,
+    100% 100%,
+    100% 100%;
+  animation: bg-drift 60s linear infinite;
+}
+@keyframes bg-drift {
+  from {
+    background-position:
+      0 0,
+      0 0,
+      0 0,
+      0 0,
+      0 0,
+      0 0,
+      0 0;
+  }
+  to {
+    background-position:
+      0 -420px,
+      0 -420px,
+      0 -420px,
+      0 -420px,
+      0 0,
+      0 0,
+      0 0;
+  }
+}

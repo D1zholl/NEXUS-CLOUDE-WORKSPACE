@@ -1,0 +1,337 @@
+﻿{
+    "result":  "PASS",
+    "generatedAt":  "2026-11-20T10:21:37.1315430+03:00",
+    "command":  "powershell -File tests/load.ps1 -FileCount 16 -FileSizeMb 4 -ReportDir \"docs\\reports\" -ReportName \"load-20261120-i5\"",
+    "environment":  {
+                        "osCaption":  "Майкрософт Windows 11 Pro",
+                        "osVersion":  "10.0.26300",
+                        "osBuild":  "26300",
+                        "powershell":  "5.1.26100.9444",
+                        "clr":  "4.0.30319.42000",
+                        "computer":  "ACER-ASPIRE-7",
+                        "cpu":  "Intel(R) Core(TM) 5 210H",
+                        "logicalProcessors":  12,
+                        "ramGb":  15.7,
+                        "filesystem":  "NTFS",
+                        "drive":  "C:",
+                        "defenderRealTime":  false,
+                        "defenderAntivirus":  false,
+                        "defenderNote":  "",
+                        "defenderAvailable":  true,
+                        "postgres":  "17.12"
+                    },
+    "server":  {
+                   "url":  "http://127.0.0.1:8080",
+                   "pid":  13004,
+                   "version":  "0.1.0",
+                   "health":  "ok",
+                   "database":  "up"
+               },
+    "parameters":  {
+                       "fileCount":  16,
+                       "fileSizeMb":  4,
+                       "parallelUploads":  4,
+                       "parallelDownloads":  4,
+                       "downloadRounds":  2,
+                       "listRequests":  200,
+                       "memoryGrowthLimitMb":  20,
+                       "sampleIntervalMs":  250
+                   },
+    "volume":  {
+                   "id":  "c8917f00-7d66-4b4c-8656-62e30cbb2244",
+                   "rootPath":  "C:\\Users\\max\\AppData\\Local\\Temp\\nexus-resilience\\disk",
+                   "created":  false
+               },
+    "phases":  [
+                   {
+                       "name":  "список",
+                       "requests":  200,
+                       "errors":  0,
+                       "bytes":  0,
+                       "seconds":  0.52,
+                       "avgMs":  1.8,
+                       "p95Ms":  2.5,
+                       "mbPerSecond":  0,
+                       "lastPageItems":  0
+                   },
+                   {
+                       "name":  "загрузка",
+                       "requests":  16,
+                       "errors":  0,
+                       "bytes":  67108864,
+                       "seconds":  0.34,
+                       "avgMs":  55.1,
+                       "p95Ms":  0,
+                       "mbPerSecond":  190.24
+                   },
+                   {
+                       "name":  "скачивание",
+                       "requests":  32,
+                       "errors":  0,
+                       "bytes":  134217728,
+                       "seconds":  0.67,
+                       "avgMs":  47.4,
+                       "p95Ms":  73.1,
+                       "mbPerSecond":  190.56
+                   },
+                   {
+                       "name":  "Range",
+                       "requests":  24,
+                       "errors":  0,
+                       "bytes":  25165824,
+                       "seconds":  0.21,
+                       "avgMs":  5.8,
+                       "p95Ms":  8.4,
+                       "mbPerSecond":  0
+                   }
+               ],
+    "uploads":  {
+                    "completed":  16,
+                    "bytes":  67108864,
+                    "distinctSha":  16,
+                    "errors":  0
+                },
+    "downloads":  {
+                      "total":  32,
+                      "shaMatched":  32,
+                      "bytes":  134217728,
+                      "errors":  0
+                  },
+    "ranges":  {
+                   "total":  24,
+                   "ok":  24,
+                   "failedDetail":  0
+               },
+    "rangeTests":  [
+                       {
+                           "name":  "load-fcd4b8fe-000.bin",
+                           "check":  "начало",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 0-524287/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-000.bin",
+                           "check":  "середина",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 1835008-2359295/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-000.bin",
+                           "check":  "хвост",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 3670016-4194303/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-001.bin",
+                           "check":  "начало",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 0-524287/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-001.bin",
+                           "check":  "середина",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 1835008-2359295/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-001.bin",
+                           "check":  "хвост",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 3670016-4194303/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-002.bin",
+                           "check":  "начало",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 0-524287/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-002.bin",
+                           "check":  "середина",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 1835008-2359295/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-002.bin",
+                           "check":  "хвост",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 3670016-4194303/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-003.bin",
+                           "check":  "начало",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 0-524287/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-003.bin",
+                           "check":  "середина",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 1835008-2359295/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-003.bin",
+                           "check":  "хвост",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 3670016-4194303/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-004.bin",
+                           "check":  "начало",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 0-524287/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-004.bin",
+                           "check":  "середина",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 1835008-2359295/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-004.bin",
+                           "check":  "хвост",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 3670016-4194303/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-005.bin",
+                           "check":  "начало",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 0-524287/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-005.bin",
+                           "check":  "середина",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 1835008-2359295/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-005.bin",
+                           "check":  "хвост",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 3670016-4194303/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-006.bin",
+                           "check":  "начало",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 0-524287/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-006.bin",
+                           "check":  "середина",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 1835008-2359295/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-006.bin",
+                           "check":  "хвост",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 3670016-4194303/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-007.bin",
+                           "check":  "начало",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 0-524287/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-007.bin",
+                           "check":  "середина",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 1835008-2359295/4194304",
+                           "bytesOk":  true
+                       },
+                       {
+                           "name":  "load-fcd4b8fe-007.bin",
+                           "check":  "хвост",
+                           "status":  206,
+                           "bytes":  524288,
+                           "ok":  true,
+                           "contentRange":  "bytes 3670016-4194303/4194304",
+                           "bytesOk":  true
+                       }
+                   ],
+    "memory":  {
+                   "available":  true,
+                   "baselinePrivateMb":  13.8,
+                   "peakPrivateMb":  17.2,
+                   "finalPrivateMb":  17.2,
+                   "peakDeltaMb":  3.4,
+                   "finalDeltaMb":  3.4,
+                   "thresholdMb":  20,
+                   "samples":  21,
+                   "passed":  true
+               },
+    "failures":  [
+
+                 ]
+}

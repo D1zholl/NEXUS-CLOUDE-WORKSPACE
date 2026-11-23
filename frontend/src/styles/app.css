@@ -1,0 +1,31 @@
+/* Точка входа стилей. Порядок импортов повторяет исходный app.css. */
+@import './tokens.css';
+
+@import './base.css';
+@import './pages/storage.css';
+@import './pages/cloud.css';
+@import './pages/minecraft.css';
+@import './pages/build-files.css';
+@import './pages/launcher.css';
+@import './pages/system.css';
+@import './pages/ai.css';
+@import './pages/public-share.css';
+@import './background-3d.css';
+@import './components.css';
+@import './forms.css';
+@import './badges.css';
+@import './pages/home.css';
+@import './pages/auth.css';
+@import './pages/developers.css';
+@import './layout.css';
+@import './tables.css';
+@import './modals.css';
+@import './toasts.css';
+@import './empty-states.css';
+@import './components-disks.css';
+@import './pages/settings.css';
+@import './pages/audit.css';
+@import './transfers.css';
+@import './notices.css';
+@import './responsive.css';
+@import './motion.css';

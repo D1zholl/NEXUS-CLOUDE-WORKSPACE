@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus.local/schemas/manifest-1.0.json",
+  "title": "NEXUS Minecraft build manifest",
+  "description": "Манифест опубликованного релиза сборки Minecraft. Соответствует build_manifest в backend/src/minecraft/manifests.rs. Схема описывает текущий контракт 1.0; аддитивные поля (например, icon) добавляются в неё без изменения schema_version.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "build",
+    "minecraft",
+    "loader",
+    "java",
+    "files"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "description": "Версия формата манифеста. Для этой схемы — строго \"1.0\".",
+      "const": "1.0"
+    },
+    "build": {
+      "type": "object",
+      "required": [
+        "id",
+        "slug",
+        "name",
+        "release",
+        "changelog"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Идентификатор сборки (UUID).",
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "slug": {
+          "description": "URL-безопасный идентификатор сборки: латиница, цифры, одиночные дефисы.",
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "name": {
+          "description": "Отображаемое название сборки.",
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 96
+        },
+        "release": {
+          "description": "Версия релиза (не версия схемы манифеста).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[A-Za-z0-9._+-]+$"
+        },
+        "changelog": {
+          "description": "Текст изменений релиза; может быть пустым.",
+          "type": "string"
+        }
+      }
+    },
+    "minecraft": {
+      "type": "object",
+      "required": [
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "description": "Версия Minecraft. Пустая строка допустима, если она не задана в сборке.",
+          "type": "string",
+          "maxLength": 32
+        }
+      }
+    },
+    "loader": {
+      "type": "object",
+      "required": [
+        "type",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "description": "Тип загрузчика.",
+          "type": "string",
+          "enum": [
+            "vanilla",
+            "fabric",
+            "forge",
+            "neoforge",
+            "quilt"
+          ]
+        },
+        "version": {
+          "description": "Версия загрузчика; для vanilla может быть пустой.",
+          "type": "string"
+        }
+      }
+    },
+    "java": {
+      "type": "object",
+      "required": [
+        "major",
+        "min",
+        "notes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "description": "Основная версия Java.",
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 30
+        },
+        "min": {
+          "description": "Минимально допустимая версия Java.",
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 30
+        },
+        "notes": {
+          "description": "Примечания по Java; может быть пустой строкой.",
+          "type": "string"
+        }
+      }
+    },
+    "icon": {
+      "description": "Необязательная иконка сборки. Добавляется генератором, если у сборки есть committed-объект иконки. Аддитивное поле: schema_version остаётся \"1.0\".",
+      "$ref": "#/$defs/icon"
+    },
+    "files": {
+      "description": "Файлы релиза. Порядок детерминирован: сортировка по lower(path).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/file"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "description": "SHA-256 в нижнем регистре, 64 шестнадцатеричных символа.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relative_path": {
+      "description": "Переносимый относительный путь внутри сборки: прямые слэши, без ведущего слэша, диска/UNC, ADS-двоеточий, сегментов . и .., пустых сегментов, обратных слэшей, завершающих точки/пробела и управляющих символов. Зарезервированные имена Windows и Unicode NFC дополнительно проверяются сервером.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*//)(?!.*(^|/)\\.\\.?(/|$))(?!.*(^|/)[^/]*(?:[. ])(/|$))(?!.*[:\\u0000-\\u001F])[^\\\\]+$"
+    },
+    "icon": {
+      "type": "object",
+      "required": [
+        "url",
+        "sha256"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "description": "Относительный URL получения иконки; резолвится относительно базового URL сервера.",
+          "type": "string",
+          "pattern": "^/api/v1/launcher/builds/[a-z0-9]+(?:-[a-z0-9]+)*/icon$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "file": {
+      "type": "object",
+      "required": [
+        "id",
+        "path",
+        "category",
+        "side",
+        "required",
+        "size",
+        "sha256",
+        "download_url"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Идентификатор артефакта (UUID).",
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "path": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "category": {
+          "description": "Категория файла из validation::CATEGORIES.",
+          "type": "string",
+          "enum": [
+            "mods",
+            "config",
+            "resourcepacks",
+            "shaderpacks",
+            "scripts",
+            "overrides",
+            "other"
+          ]
+        },
+        "side": {
+          "description": "Сторона установки из validation::SIDES.",
+          "type": "string",
+          "enum": [
+            "client",
+            "server",
+            "both"
+          ]
+        },
+        "required": {
+          "description": "Обязателен ли файл для установки.",
+          "type": "boolean"
+        },
+        "size": {
+          "description": "Точный размер файла в байтах (i64).",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "download_url": {
+          "description": "Относительный URL скачивания артефакта. Никогда не абсолютный серверный путь.",
+          "type": "string",
+          "pattern": "^/api/v1/launcher/artifacts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      }
+    }
+  }
+}

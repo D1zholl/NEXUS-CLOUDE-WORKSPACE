@@ -1,0 +1,106 @@
+:root {
+  /* Базовая палитра NEXUS WORKSPACE */
+  --bg-primary: #050b16;
+  --bg-deep: #02060d;
+  --bg-secondary: #0b1427;
+  --bg-card: rgba(15, 29, 54, 0.82);
+  --surface: rgba(11, 22, 43, 0.66);
+  --surface-strong: rgba(10, 19, 37, 0.92);
+  --surface-hover: rgba(20, 38, 68, 0.72);
+
+  --accent: #58d4ff;
+  --accent-rgb: 88, 212, 255;
+  --accent-secondary: #86e1ff;
+  --accent-2: #ff4fd8;
+  --accent-2-rgb: 255, 79, 216;
+
+  --text-primary: #edf5ff;
+  --text-secondary: #91a5c0;
+  --text-label: #c7d6ea;
+
+  --border: rgba(90, 170, 255, 0.22);
+  --border-soft: rgba(120, 170, 255, 0.12);
+  --border-strong: rgba(88, 212, 255, 0.55);
+  --glow-blue: rgba(64, 175, 255, 0.35);
+
+  --success: #3dffb0;
+  --success-rgb: 61, 255, 176;
+  --warning: #ffb347;
+  --warning-rgb: 255, 179, 71;
+  --danger: #ff4d6d;
+  --danger-rgb: 255, 77, 109;
+  --info: #5aa2ff;
+  --info-rgb: 90, 162, 255;
+
+  --radius-xl: 24px;
+  --radius-lg: 18px;
+  --radius-md: 13px;
+  --radius-sm: 9px;
+
+  --font-sans:
+    'Segoe UI Variable Text', 'Segoe UI', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono:
+    'Cascadia Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Тема подсветки синтаксиса (highlight.js) в стиле NEXUS WORKSPACE */
+  --code-bg: rgba(3, 8, 17, 0.82);
+  --hljs-text: #d7e6fb;
+  --hljs-comment: #6f86a6;
+  --hljs-keyword: #ff7ad9;
+  --hljs-string: #66f2bb;
+  --hljs-number: #ffb347;
+  --hljs-literal: #ffb347;
+  --hljs-built-in: #86e1ff;
+  --hljs-title: #58d4ff;
+  --hljs-attr: #a9c8ff;
+  --hljs-variable: #c7d6ea;
+  --hljs-type: #b18cff;
+  --hljs-meta: #91a5c0;
+  --hljs-tag: #58d4ff;
+  --hljs-name: #58d4ff;
+  --hljs-symbol: #ffb347;
+  --hljs-regexp: #ff8fa3;
+
+  --shadow-panel: 0 24px 70px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  --shadow-glow: 0 0 32px rgba(88, 212, 255, 0.18);
+  --ease: cubic-bezier(0.22, 0.9, 0.28, 1);
+  --ease-out: cubic-bezier(0.22, 0.9, 0.28, 1);
+  --ease-in: cubic-bezier(0.4, 0, 0.7, 0.2);
+
+  /* Единые длительности интерфейсных анимаций */
+  --motion-fast: 0.14s;
+  --motion-base: 0.18s;
+  --motion-slow: 0.24s;
+
+  --sidebar-width: 264px;
+  --topbar-height: 68px;
+}
+
+/* K4: акцент интерфейса хранится в профиле (`appearance.interface`) и
+   применяется атрибутом data-accent на <html>. Базовое значение — циан. */
+:root[data-accent='magenta'] {
+  --accent: #ff4fd8;
+  --accent-rgb: 255, 79, 216;
+  --accent-secondary: #ff8fe6;
+  --border-strong: rgba(255, 79, 216, 0.55);
+  --glow-blue: rgba(255, 79, 216, 0.35);
+  --shadow-glow: 0 0 32px rgba(255, 79, 216, 0.18);
+}
+
+:root[data-accent='green'] {
+  --accent: #3dffb0;
+  --accent-rgb: 61, 255, 176;
+  --accent-secondary: #8affd0;
+  --border-strong: rgba(61, 255, 176, 0.55);
+  --glow-blue: rgba(61, 255, 176, 0.32);
+  --shadow-glow: 0 0 32px rgba(61, 255, 176, 0.16);
+}
+
+:root[data-accent='amber'] {
+  --accent: #ffb347;
+  --accent-rgb: 255, 179, 71;
+  --accent-secondary: #ffd28a;
+  --border-strong: rgba(255, 179, 71, 0.55);
+  --glow-blue: rgba(255, 179, 71, 0.32);
+  --shadow-glow: 0 0 32px rgba(255, 179, 71, 0.16);
+}

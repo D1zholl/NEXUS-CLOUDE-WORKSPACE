@@ -1,0 +1,1032 @@
+//! Исходящее WSS-соединение, heartbeat, исполнение команд и reconnect.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use dashmap::DashMap;
+use futures_util::{SinkExt, StreamExt};
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use tokio::sync::{RwLock, Semaphore, mpsc};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
+use crate::config::{DeviceCredentials, RuntimeConfig};
+use crate::process::ProgramRegistry;
+use crate::protocol::{
+    Envelope, PolystrataStatus, ProviderChatCompleted, ProviderRequest, ProviderResponse,
+    RuntimeCapabilities, ToolExecuteRequest, ToolOutcome, kind,
+};
+use crate::provider::ProviderClient;
+use crate::tools::ToolExecutor;
+
+#[derive(Clone)]
+pub struct RuntimeContext {
+    pub config: Arc<RuntimeConfig>,
+    pub credentials: DeviceCredentials,
+    provider: Arc<ProviderClient>,
+    tools: Arc<ToolExecutor>,
+    roots: Arc<Vec<PathBuf>>,
+    outbound: mpsc::UnboundedSender<Envelope>,
+    sequence: Arc<AtomicI64>,
+    active: Arc<DashMap<Uuid, ActiveTask>>,
+    task_index: Arc<DashMap<Uuid, Vec<Uuid>>>,
+    provider_cache: Arc<DashMap<Uuid, ProviderChatCompleted>>,
+    tool_cache: Arc<DashMap<Uuid, ToolOutcome>>,
+    receipts: Arc<ReceiptStore>,
+    semaphore: Arc<Semaphore>,
+    last_status: Arc<RwLock<PolystrataStatus>>,
+}
+
+struct ActiveTask {
+    task_id: Option<Uuid>,
+    cancel: CancellationToken,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Receipt {
+    message_id: Uuid,
+    kind: String,
+    #[serde(default)]
+    provider: Option<ProviderChatCompleted>,
+    #[serde(default)]
+    tool: Option<ToolOutcome>,
+}
+
+struct ReceiptStore {
+    path: PathBuf,
+}
+
+impl ReceiptStore {
+    fn load(path: PathBuf) -> (Self, Vec<Receipt>) {
+        let mut receipts = Vec::new();
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let lines: Vec<&str> = text.lines().collect();
+            for line in lines.iter().rev().take(2000).rev() {
+                if let Ok(receipt) = serde_json::from_str::<Receipt>(line) {
+                    receipts.push(receipt);
+                }
+            }
+        }
+        (Self { path }, receipts)
+    }
+
+    fn append(&self, receipt: &Receipt) {
+        if let Ok(metadata) = std::fs::metadata(&self.path) {
+            if metadata.len() > 10 * 1024 * 1024 {
+                return;
+            }
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            use std::io::Write;
+            if let Ok(line) = serde_json::to_string(receipt) {
+                let _ = writeln!(file, "{line}");
+            }
+        }
+    }
+}
+
+pub async fn run(
+    config: RuntimeConfig,
+    credentials: DeviceCredentials,
+    mut shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<()> {
+    let roots = config.canonical_roots()?;
+    let (receipts, loaded) = ReceiptStore::load(config.receipts_path());
+    let provider_cache: Arc<DashMap<Uuid, ProviderChatCompleted>> = Arc::new(DashMap::new());
+    let tool_cache: Arc<DashMap<Uuid, ToolOutcome>> = Arc::new(DashMap::new());
+    for receipt in loaded {
+        if let Some(completed) = receipt.provider {
+            provider_cache.insert(receipt.message_id, completed);
+        }
+        if let Some(outcome) = receipt.tool {
+            tool_cache.insert(receipt.message_id, outcome);
+        }
+    }
+
+    let config = Arc::new(config);
+    let max_parallel = config.limits.max_parallel_tasks.max(1);
+    let mut attempt = 0u32;
+    loop {
+        let (outbound, outbound_rx) = mpsc::unbounded_channel();
+        let context = RuntimeContext {
+            config: config.clone(),
+            credentials: credentials.clone(),
+            provider: Arc::new(ProviderClient::new(&config.provider)?),
+            tools: Arc::new(ToolExecutor::new(
+                &config.limits,
+                roots.clone(),
+                ProgramRegistry::new(&config.programs, &config.limits),
+            )),
+            roots: Arc::new(roots.clone()),
+            outbound,
+            sequence: Arc::new(AtomicI64::new(0)),
+            active: Arc::new(DashMap::new()),
+            task_index: Arc::new(DashMap::new()),
+            provider_cache: provider_cache.clone(),
+            tool_cache: tool_cache.clone(),
+            receipts: Arc::new(ReceiptStore {
+                path: config.receipts_path(),
+            }),
+            semaphore: Arc::new(Semaphore::new(max_parallel)),
+            last_status: Arc::new(RwLock::new(PolystrataStatus::default())),
+        };
+        let _ = &receipts;
+
+        match connect_once(context, outbound_rx, shutdown.clone()).await {
+            Ok(()) => tracing::info!("соединение с NEXUS закрыто"),
+            Err(error) => {
+                tracing::warn!(%error, "ошибка соединения с NEXUS");
+            }
+        }
+        if shutdown.as_ref().map(|rx| *rx.borrow()).unwrap_or(false) {
+            tracing::info!("получен сигнал остановки Runtime");
+            return Ok(());
+        }
+        attempt = attempt.saturating_add(1);
+        let min = config.server.reconnect_min_seconds.max(1);
+        let max = config.server.reconnect_max_seconds.max(min);
+        let base = (min * 2u64.saturating_pow(attempt.min(8))).min(max);
+        let jitter = rand::thread_rng().gen_range(0..=base / 3 + 1);
+        let delay = Duration::from_secs(base + jitter);
+        tracing::info!(seconds = delay.as_secs(), "переподключение к NEXUS");
+        match shutdown.as_mut() {
+            Some(receiver) => {
+                let sleep = tokio::time::sleep(delay);
+                tokio::pin!(sleep);
+                loop {
+                    tokio::select! {
+                        _ = &mut sleep => break,
+                        changed = receiver.changed() => {
+                            if changed.is_err() || *receiver.borrow() {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+            None => tokio::time::sleep(delay).await,
+        }
+    }
+}
+
+async fn connect_once(
+    context: RuntimeContext,
+    mut outbound_rx: mpsc::UnboundedReceiver<Envelope>,
+    mut shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<()> {
+    let mut request = context
+        .config
+        .server
+        .url
+        .as_str()
+        .into_client_request()
+        .context("некорректный server.url")?;
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {}", context.credentials.device_token)
+            .parse()
+            .context("device token содержит недопустимые символы")?,
+    );
+    request.headers_mut().insert(
+        "user-agent",
+        format!("nexus-ai-runtime/{}", env!("CARGO_PKG_VERSION"))
+            .parse()
+            .context("user-agent")?,
+    );
+
+    tracing::info!(url = %context.config.server.url, "подключение к NEXUS");
+    let (socket, response) = tokio_tungstenite::connect_async(request)
+        .await
+        .context("не удалось установить WSS-соединение с NEXUS")?;
+    tracing::info!(status = %response.status(), "WebSocket Runtime подключён");
+
+    let (mut write, mut read) = socket.split();
+    let writer = tokio::spawn(async move {
+        while let Some(envelope) = outbound_rx.recv().await {
+            let Ok(text) = serde_json::to_string(&envelope) else {
+                continue;
+            };
+            if write.send(Message::Text(text.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let capabilities = context.base_capabilities();
+    context.send(
+        kind::HELLO,
+        None,
+        None,
+        serde_json::to_value(&capabilities)?,
+    );
+    {
+        let probe = context.clone();
+        tokio::spawn(async move {
+            let capabilities = probe.probe_capabilities().await;
+            {
+                let mut status = probe.last_status.write().await;
+                *status = capabilities.polystrata.clone();
+            }
+            probe.send(
+                kind::CAPABILITIES,
+                None,
+                None,
+                serde_json::to_value(capabilities).unwrap_or(Value::Null),
+            );
+        });
+    }
+
+    let heartbeat_context = context.clone();
+    let heartbeat = tokio::spawn(async move {
+        let interval = Duration::from_secs(heartbeat_context.config.server.heartbeat_seconds);
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker.tick().await;
+        let mut capability_ticker = tokio::time::Instant::now() + Duration::from_secs(300);
+        loop {
+            ticker.tick().await;
+            let status = heartbeat_context.last_status.read().await.clone();
+            heartbeat_context.send(
+                kind::HEARTBEAT,
+                None,
+                None,
+                json!({
+                    "status": if status.reachable { "ok" } else { "degraded" },
+                    "polystrata": status,
+                    "runtimeVersion": env!("CARGO_PKG_VERSION"),
+                }),
+            );
+            if tokio::time::Instant::now() >= capability_ticker {
+                let capabilities = heartbeat_context.probe_capabilities().await;
+                {
+                    let mut status = heartbeat_context.last_status.write().await;
+                    *status = capabilities.polystrata.clone();
+                }
+                heartbeat_context.send(
+                    kind::CAPABILITIES,
+                    None,
+                    None,
+                    serde_json::to_value(capabilities).unwrap_or(Value::Null),
+                );
+                capability_ticker = tokio::time::Instant::now() + Duration::from_secs(300);
+            }
+        }
+    });
+
+    loop {
+        let next = if let Some(receiver) = shutdown.as_mut() {
+            tokio::select! {
+                _ = receiver.changed() => {
+                    heartbeat.abort();
+                    writer.abort();
+                    bail!("Runtime остановлен");
+                }
+                result = tokio::time::timeout(Duration::from_secs(120), read.next()) => result,
+            }
+        } else {
+            tokio::time::timeout(Duration::from_secs(120), read.next()).await
+        };
+        let message = match next {
+            Ok(Some(Ok(message))) => message,
+            Ok(Some(Err(error))) => {
+                heartbeat.abort();
+                writer.abort();
+                return Err(error).context("WebSocket Runtime: ошибка чтения");
+            }
+            Ok(None) => {
+                heartbeat.abort();
+                writer.abort();
+                bail!("NEXUS закрыл WebSocket Runtime");
+            }
+            Err(_) => {
+                heartbeat.abort();
+                writer.abort();
+                bail!("нет данных от NEXUS более 120 секунд");
+            }
+        };
+        match message {
+            Message::Text(text) => {
+                let envelope: Envelope = match serde_json::from_str(&text) {
+                    Ok(envelope) => envelope,
+                    Err(error) => {
+                        tracing::warn!(%error, "некорректный кадр NEXUS");
+                        continue;
+                    }
+                };
+                if envelope.node_id != context.credentials.node_id {
+                    tracing::warn!(
+                        expected = %context.credentials.node_id,
+                        received = %envelope.node_id,
+                        "node_id не совпадает с device token; кадр отклонён"
+                    );
+                    continue;
+                }
+                if envelope.protocol_version != crate::protocol::PROTOCOL_VERSION {
+                    context.send(
+                        kind::RUNTIME_ERROR,
+                        Some(envelope.message_id),
+                        envelope.task_id,
+                        json!({
+                            "code": "AI_PROTOCOL_VERSION_UNSUPPORTED",
+                            "message": "Версия протокола Runtime не поддерживается."
+                        }),
+                    );
+                    continue;
+                }
+                let ctx = context.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = ctx.handle(envelope).await {
+                        tracing::warn!(%error, "ошибка обработки команды NEXUS");
+                    }
+                });
+            }
+            Message::Ping(data) => {
+                // Ответ Pong отправляется протоколом при следующей записи;
+                // heartbeat обеспечивает регулярный flush.
+                let _ = data;
+            }
+            Message::Close(_) => {
+                heartbeat.abort();
+                writer.abort();
+                bail!("NEXUS инициировал закрытие соединения");
+            }
+            _ => {}
+        }
+    }
+}
+
+impl RuntimeContext {
+    fn send(
+        &self,
+        kind_value: &str,
+        correlation: Option<Uuid>,
+        task_id: Option<Uuid>,
+        payload: Value,
+    ) {
+        let sequence = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        let envelope = Envelope::new(
+            kind_value,
+            self.credentials.node_id,
+            correlation,
+            task_id,
+            Some(sequence),
+            payload,
+        );
+        let _ = self.outbound.send(envelope);
+    }
+
+    fn base_capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
+            platform: format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
+            protocol_version: crate::protocol::PROTOCOL_VERSION,
+            models: Vec::new(),
+            polystrata: PolystrataStatus::default(),
+            tools: self.tools.descriptors(),
+            programs: self.tools.programs().descriptors(),
+        }
+    }
+
+    async fn probe_capabilities(&self) -> RuntimeCapabilities {
+        let (reachable, data) = match self.provider.status().await {
+            Ok((reachable, data)) => (reachable, data),
+            Err(error) => (
+                false,
+                json!({ "error": sanitize(&error.to_string(), &self.roots) }),
+            ),
+        };
+        let models: Vec<String> = data
+            .get("models")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let status = PolystrataStatus {
+            reachable,
+            version: data
+                .get("status")
+                .and_then(|value| value.get("body"))
+                .and_then(|value| value.get("version"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_owned(),
+            model_count: models.len() as i64,
+            error: if reachable {
+                None
+            } else {
+                Some("PolyStrata недоступна".to_owned())
+            },
+        };
+        RuntimeCapabilities {
+            runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
+            platform: format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
+            protocol_version: crate::protocol::PROTOCOL_VERSION,
+            models,
+            polystrata: status,
+            tools: self.tools.descriptors(),
+            programs: self.tools.programs().descriptors(),
+        }
+    }
+
+    async fn handle(&self, envelope: Envelope) -> Result<()> {
+        match envelope.kind.as_str() {
+            kind::HELLO_ACK => {
+                tracing::info!(
+                    server_time = %envelope.payload.get("serverTime").and_then(|v| v.as_str()).unwrap_or(""),
+                    "Runtime зарегистрирован в NEXUS"
+                );
+            }
+            kind::HEARTBEAT_ACK | kind::CAPABILITIES_ACK => {}
+            kind::PROVIDER_START => self.start_provider(envelope).await?,
+            kind::PROVIDER_REQUEST => self.provider_operation(envelope).await?,
+            kind::PROVIDER_CANCEL => {
+                if let Some(correlation) = envelope.correlation_id {
+                    self.cancel_message(correlation);
+                }
+            }
+            kind::TASK_CANCEL => {
+                if let Some(task_id) = envelope.task_id {
+                    self.cancel_task(task_id).await;
+                }
+            }
+            kind::TOOL_EXECUTE => self.start_tool(envelope).await?,
+            kind::RUNTIME_ERROR => {
+                tracing::warn!(
+                    code = envelope
+                        .payload
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                    message = envelope
+                        .payload
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                    "NEXUS сообщил об ошибке Runtime"
+                );
+            }
+            other => {
+                tracing::debug!(kind = other, "неизвестная команда NEXUS");
+            }
+        }
+        Ok(())
+    }
+
+    async fn start_provider(&self, envelope: Envelope) -> Result<()> {
+        let request: crate::protocol::ProviderChatRequest =
+            serde_json::from_value(envelope.payload.clone())
+                .context("некорректный provider.chat.start")?;
+        if let Some(cached) = self.provider_cache.get(&envelope.message_id) {
+            self.send(
+                kind::PROVIDER_COMPLETED,
+                Some(envelope.message_id),
+                envelope.task_id,
+                serde_json::to_value(cached.clone())?,
+            );
+            return Ok(());
+        }
+        if self.active.contains_key(&envelope.message_id) {
+            return Ok(());
+        }
+        let cancel = CancellationToken::new();
+        self.register(envelope.message_id, envelope.task_id, cancel.clone());
+        self.send(
+            kind::PROVIDER_ACK,
+            Some(envelope.message_id),
+            envelope.task_id,
+            json!({ "accepted": true }),
+        );
+
+        let context = self.clone();
+        let message_id = envelope.message_id;
+        let task_id = envelope.task_id;
+        tokio::spawn(async move {
+            let permit = context.semaphore.clone().acquire_owned().await;
+            let result = match permit {
+                Ok(_permit) => {
+                    let node_id = context.credentials.node_id;
+                    let outbound = context.outbound.clone();
+                    let mut on_delta = |delta: &str| {
+                        let sequence = context.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+                        let envelope = Envelope::new(
+                            kind::PROVIDER_DELTA,
+                            node_id,
+                            Some(message_id),
+                            task_id,
+                            Some(sequence),
+                            json!({ "delta": delta }),
+                        );
+                        let _ = outbound.send(envelope);
+                    };
+                    context
+                        .provider
+                        .chat(&request, request.api_key.as_deref(), &cancel, &mut on_delta)
+                        .await
+                }
+                Err(_) => Err(anyhow::anyhow!("Runtime остановлен")),
+            };
+            match result {
+                Ok(completed) => {
+                    context.provider_cache.insert(message_id, completed.clone());
+                    context.receipts.append(&Receipt {
+                        message_id,
+                        kind: "provider".to_owned(),
+                        provider: Some(completed.clone()),
+                        tool: None,
+                    });
+                    context.send(
+                        kind::PROVIDER_COMPLETED,
+                        Some(message_id),
+                        task_id,
+                        serde_json::to_value(completed).unwrap_or(Value::Null),
+                    );
+                }
+                Err(error) => {
+                    let (code, message) = provider_error(&error);
+                    context.send(
+                        kind::PROVIDER_FAILED,
+                        Some(message_id),
+                        task_id,
+                        json!({
+                            "code": code,
+                            "message": sanitize(&message, &context.roots),
+                        }),
+                    );
+                }
+            }
+            context.finish(message_id);
+        });
+        Ok(())
+    }
+
+    async fn provider_operation(&self, envelope: Envelope) -> Result<()> {
+        let request: ProviderRequest = serde_json::from_value(envelope.payload.clone())
+            .context("некорректный provider.request")?;
+        let correlation = envelope.message_id;
+        let context = self.clone();
+        tokio::spawn(async move {
+            let response = match request.operation.as_str() {
+                "models" => {
+                    match context
+                        .provider
+                        .models_at(&request.base_url, request.api_key.as_deref())
+                        .await
+                    {
+                        Ok(models) => ProviderResponse {
+                            operation: "models".to_owned(),
+                            ok: true,
+                            models,
+                            data: json!({}),
+                            error: None,
+                        },
+                        Err(error) => ProviderResponse {
+                            operation: "models".to_owned(),
+                            ok: false,
+                            models: Vec::new(),
+                            data: json!({}),
+                            error: Some(sanitize(&error.to_string(), &context.roots)),
+                        },
+                    }
+                }
+                "status" => {
+                    match context
+                        .provider
+                        .status_at(&request.base_url, request.api_key.as_deref())
+                        .await
+                    {
+                        Ok((reachable, data)) => {
+                            let models: Vec<String> = data
+                                .get("models")
+                                .and_then(|value| value.as_array())
+                                .map(|items| {
+                                    items
+                                        .iter()
+                                        .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            ProviderResponse {
+                                operation: "status".to_owned(),
+                                ok: reachable,
+                                models,
+                                data,
+                                error: if reachable {
+                                    None
+                                } else {
+                                    Some("PolyStrata недоступна".to_owned())
+                                },
+                            }
+                        }
+                        Err(error) => ProviderResponse {
+                            operation: "status".to_owned(),
+                            ok: false,
+                            models: Vec::new(),
+                            data: json!({}),
+                            error: Some(sanitize(&error.to_string(), &context.roots)),
+                        },
+                    }
+                }
+                other => ProviderResponse {
+                    operation: other.to_owned(),
+                    ok: false,
+                    models: Vec::new(),
+                    data: json!({}),
+                    error: Some("неизвестная операция провайдера".to_owned()),
+                },
+            };
+            context.send(
+                kind::PROVIDER_RESPONSE,
+                Some(correlation),
+                envelope.task_id,
+                serde_json::to_value(response).unwrap_or(Value::Null),
+            );
+        });
+        Ok(())
+    }
+
+    async fn start_tool(&self, envelope: Envelope) -> Result<()> {
+        let request: ToolExecuteRequest = serde_json::from_value(envelope.payload.clone())
+            .context("некорректный tool.execute")?;
+        if let Some(cached) = self.tool_cache.get(&envelope.message_id) {
+            self.send(
+                kind::TOOL_COMPLETED,
+                Some(envelope.message_id),
+                envelope.task_id,
+                serde_json::to_value(cached.clone())?,
+            );
+            return Ok(());
+        }
+        if self.active.contains_key(&envelope.message_id) {
+            return Ok(());
+        }
+        let cancel = CancellationToken::new();
+        self.register(envelope.message_id, envelope.task_id, cancel.clone());
+        self.send(
+            kind::TOOL_ACCEPTED,
+            Some(envelope.message_id),
+            envelope.task_id,
+            json!({ "toolId": request.tool_id }),
+        );
+        let context = self.clone();
+        let message_id = envelope.message_id;
+        let task_id = envelope.task_id;
+        tokio::spawn(async move {
+            let permit = context.semaphore.clone().acquire_owned().await;
+            let result = match permit {
+                Ok(_permit) => context.tools.execute(&request, &cancel).await,
+                Err(_) => Err(anyhow::anyhow!("Runtime остановлен")),
+            };
+            match result {
+                Ok(outcome) => {
+                    let outcome = context.redact_outcome(outcome);
+                    context.tool_cache.insert(message_id, outcome.clone());
+                    context.receipts.append(&Receipt {
+                        message_id,
+                        kind: "tool".to_owned(),
+                        provider: None,
+                        tool: Some(outcome.clone()),
+                    });
+                    context.send(
+                        kind::TOOL_COMPLETED,
+                        Some(message_id),
+                        task_id,
+                        serde_json::to_value(outcome).unwrap_or(Value::Null),
+                    );
+                }
+                Err(error) => {
+                    let (code, message) = tool_error(&error, &cancel);
+                    context.send(
+                        kind::TOOL_FAILED,
+                        Some(message_id),
+                        task_id,
+                        json!({
+                            "code": code,
+                            "message": sanitize(&message, &context.roots),
+                        }),
+                    );
+                }
+            }
+            context.finish(message_id);
+        });
+        Ok(())
+    }
+
+    fn register(&self, message_id: Uuid, task_id: Option<Uuid>, cancel: CancellationToken) {
+        self.active
+            .insert(message_id, ActiveTask { task_id, cancel });
+        if let Some(task_id) = task_id {
+            self.task_index
+                .entry(task_id)
+                .or_insert_with(Vec::new)
+                .push(message_id);
+        }
+    }
+
+    fn finish(&self, message_id: Uuid) {
+        if let Some((_, active)) = self.active.remove(&message_id) {
+            if let Some(task_id) = active.task_id {
+                if let Some(mut entry) = self.task_index.get_mut(&task_id) {
+                    entry.retain(|id| *id != message_id);
+                }
+            }
+        }
+    }
+
+    fn cancel_message(&self, message_id: Uuid) {
+        if let Some(active) = self.active.get(&message_id) {
+            active.cancel.cancel();
+        }
+    }
+
+    fn redact_outcome(&self, mut outcome: ToolOutcome) -> ToolOutcome {
+        let secrets = [
+            self.credentials.device_token.clone(),
+            self.config.provider.api_key.clone(),
+        ];
+        let clean = |text: &str| -> String {
+            let mut value = sanitize(text, &self.roots);
+            for secret in &secrets {
+                if secret.trim().len() >= 8 {
+                    value = value.replace(secret, "<redacted>");
+                }
+            }
+            value
+        };
+        if let Some(text) = &outcome.result_text {
+            outcome.result_text = Some(clean(text));
+        }
+        let serialized = outcome.result.to_string();
+        let cleaned = clean(&serialized);
+        if cleaned != serialized {
+            if let Ok(parsed) = serde_json::from_str::<Value>(&cleaned) {
+                outcome.result = parsed;
+            } else {
+                outcome.result = Value::String(cleaned);
+            }
+        }
+        outcome
+    }
+
+    async fn cancel_task(&self, task_id: Uuid) {
+        let ids = self
+            .task_index
+            .get(&task_id)
+            .map(|entry| entry.clone())
+            .unwrap_or_default();
+        for id in ids {
+            self.cancel_message(id);
+        }
+        let context = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            context.send(
+                kind::TASK_CANCELLED,
+                None,
+                Some(task_id),
+                json!({ "taskId": task_id }),
+            );
+            context.task_index.remove(&task_id);
+        });
+    }
+}
+
+fn provider_error(error: &anyhow::Error) -> (&'static str, String) {
+    let message = error.to_string();
+    if message.contains("отменена") {
+        ("AI_PROVIDER_CANCELLED", message)
+    } else if message.contains("timeout") || message.contains("превысил") {
+        ("AI_PROVIDER_TIMEOUT", message)
+    } else if message.contains("HTTP") {
+        ("AI_PROVIDER_HTTP_ERROR", message)
+    } else if message.contains("JSON") || message.contains("choices") {
+        ("AI_PROVIDER_INVALID_RESPONSE", message)
+    } else {
+        ("AI_PROVIDER_ERROR", message)
+    }
+}
+
+fn tool_error(error: &anyhow::Error, cancel: &CancellationToken) -> (&'static str, String) {
+    let message = error.to_string();
+    if cancel.is_cancelled() || message.contains("отменено") {
+        ("AI_TOOL_CANCELLED", message)
+    } else if message.contains("схем") {
+        ("AI_TOOL_INVALID_ARGUMENTS", message)
+    } else if message.contains("разрешён") || message.contains("зарегистрирован")
+    {
+        ("AI_TOOL_NOT_ALLOWED", message)
+    } else if message.contains("symlink")
+        || message.contains("workspace")
+        || message.contains("путь")
+    {
+        ("AI_WORKSPACE_PATH_DENIED", message)
+    } else {
+        ("AI_TOOL_FAILED", message)
+    }
+}
+
+fn sanitize(message: &str, roots: &[PathBuf]) -> String {
+    let mut value = message.to_owned();
+    for root in roots {
+        value = value.replace(&root.to_string_lossy().to_string(), "<workspace>");
+    }
+    value.chars().take(1000).collect()
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::config::{LimitsConfig, ProviderConfig, ServerConfig, StorageConfig};
+    use tokio_tungstenite::accept_async;
+
+    fn test_config(port: u16, root: &std::path::Path, state: &std::path::Path) -> RuntimeConfig {
+        RuntimeConfig {
+            server: ServerConfig {
+                url: format!("ws://127.0.0.1:{port}/api/v1/ai/runtime/connect"),
+                enroll_url: String::new(),
+                name: "TEST".into(),
+                allow_insecure_ws: true,
+                heartbeat_seconds: 20,
+                reconnect_min_seconds: 1,
+                reconnect_max_seconds: 2,
+            },
+            storage: StorageConfig {
+                state_dir: state.to_string_lossy().to_string(),
+                allowed_roots: vec![root.parent().unwrap().to_string_lossy().to_string()],
+                ..Default::default()
+            },
+            provider: ProviderConfig {
+                base_url: "http://127.0.0.1:9/v1".into(),
+                timeout_seconds: 5,
+                connect_timeout_seconds: 1,
+                ..Default::default()
+            },
+            limits: LimitsConfig::default(),
+            programs: Vec::new(),
+            logging: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn executes_tool_over_websocket_and_deduplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowed = dir.path().canonicalize().unwrap();
+        let workspace_root = allowed.join("workspace");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let state = allowed.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = test_config(port, &workspace_root, &state);
+        let credentials = DeviceCredentials {
+            node_id: Uuid::new_v4(),
+            device_token: "nxa_test".to_owned(),
+            server_url: config.server.url.clone(),
+            enrolled_at: chrono::Utc::now(),
+            runtime_name: "TEST".to_owned(),
+        };
+        let workspace_id = Uuid::new_v4();
+        let (server_done_tx, server_done_rx) = tokio::sync::oneshot::channel();
+        let root_for_server = workspace_root.clone();
+        let node_id = credentials.node_id;
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let hello = socket.next().await.unwrap().unwrap();
+            let hello: Envelope = serde_json::from_str(hello.to_text().unwrap()).unwrap();
+            assert_eq!(hello.kind, kind::HELLO);
+            assert_eq!(hello.node_id, node_id);
+            let message_id = Uuid::new_v4();
+            let command = Envelope::new(
+                kind::TOOL_EXECUTE,
+                node_id,
+                Some(message_id),
+                None,
+                Some(1),
+                json!({
+                    "toolId": "fs.write",
+                    "version": 1,
+                    "arguments": { "path": "a.txt", "content": "first", "overwrite": true },
+                    "workspaceId": workspace_id,
+                    "workspaceRoot": root_for_server.to_string_lossy(),
+                    "timeoutSeconds": 10,
+                    "maxOutputBytes": 65536,
+                    "workspaceMaxFileBytes": 1024 * 1024,
+                    "workspaceQuotaBytes": 10 * 1024 * 1024,
+                    "workspaceMaxFiles": 100
+                }),
+            );
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&command).unwrap().into(),
+                ))
+                .await
+                .unwrap();
+            let mut completed = None;
+            for _ in 0..10 {
+                let message = tokio::time::timeout(Duration::from_secs(10), socket.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                if let Message::Text(text) = message {
+                    let envelope: Envelope = serde_json::from_str(&text).unwrap();
+                    if envelope.kind == kind::TOOL_COMPLETED {
+                        completed = Some(envelope);
+                        break;
+                    }
+                }
+            }
+            assert!(completed.is_some(), "tool.completed не получен");
+            assert_eq!(
+                std::fs::read_to_string(root_for_server.join("a.txt")).unwrap(),
+                "first"
+            );
+
+            // Повторная доставка того же message_id не должна выполнять write.
+            let mut duplicate = command.clone();
+            duplicate.payload["arguments"]["content"] = json!("second");
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&duplicate).unwrap().into(),
+                ))
+                .await
+                .unwrap();
+            let mut duplicate_completed = None;
+            for _ in 0..10 {
+                let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                if let Message::Text(text) = message {
+                    let envelope: Envelope = serde_json::from_str(&text).unwrap();
+                    if envelope.kind == kind::TOOL_COMPLETED {
+                        duplicate_completed = Some(envelope);
+                        break;
+                    }
+                }
+            }
+            assert!(duplicate_completed.is_some(), "повторный ответ не получен");
+            assert_eq!(
+                std::fs::read_to_string(root_for_server.join("a.txt")).unwrap(),
+                "first",
+                "deduplication по messageId должна предотвратить повторный write"
+            );
+            let _ = server_done_tx.send(());
+        });
+
+        let config = Arc::new(config);
+        let (outbound, outbound_rx) = mpsc::unbounded_channel();
+        let context = RuntimeContext {
+            config: config.clone(),
+            credentials,
+            provider: Arc::new(ProviderClient::new(&config.provider).unwrap()),
+            tools: Arc::new(ToolExecutor::new(
+                &config.limits,
+                vec![allowed.clone()],
+                ProgramRegistry::new(&config.programs, &config.limits),
+            )),
+            roots: Arc::new(vec![allowed.clone()]),
+            outbound,
+            sequence: Arc::new(AtomicI64::new(0)),
+            active: Arc::new(DashMap::new()),
+            task_index: Arc::new(DashMap::new()),
+            provider_cache: Arc::new(DashMap::new()),
+            tool_cache: Arc::new(DashMap::new()),
+            receipts: Arc::new(ReceiptStore {
+                path: state.join("receipts.jsonl"),
+            }),
+            semaphore: Arc::new(Semaphore::new(2)),
+            last_status: Arc::new(RwLock::new(PolystrataStatus::default())),
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let runtime = tokio::spawn(async move {
+            let _ = connect_once(context, outbound_rx, Some(shutdown_rx)).await;
+        });
+
+        tokio::time::timeout(Duration::from_secs(20), server_done_rx)
+            .await
+            .expect("серверный сценарий не завершился")
+            .unwrap();
+        let _ = shutdown_tx.send(true);
+        runtime.abort();
+        let _ = server.await;
+    }
+}

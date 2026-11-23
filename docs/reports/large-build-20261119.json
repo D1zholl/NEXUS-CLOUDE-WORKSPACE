@@ -1,0 +1,593 @@
+﻿{
+    "phase":  "G2",
+    "generatedAt":  "2026-11-19T20:21:24.9102300+03:00",
+    "result":  "PASS",
+    "command":  "tests/large-build.ps1 -SizeGb 25 -FileCount 500 -VolumeRoot C:\\Users\\max\\AppData\\Local\\Temp\\nexus-resilience\\disk -ReportDir docs\\reports -Password *** -Cleanup True",
+    "environment":  {
+                        "hostname":  "ACER-ASPIRE-7",
+                        "osCaption":  "Майкрософт Windows 11 Pro",
+                        "osVersion":  "10.0.26300",
+                        "osBuild":  "26300",
+                        "powershell":  "5.1.26100.9444",
+                        "dotnet":  "4.0.30319.42000",
+                        "filesystem":  "NTFS",
+                        "driveLetter":  "C:",
+                        "driveType":  3,
+                        "physicalDisk":  "Phison ESO512GHLCA1-E9C",
+                        "mediaType":  "SSD",
+                        "busType":  "NVMe",
+                        "totalGb":  475.92,
+                        "freeBeforeGb":  34.99,
+                        "freeAfterUploadGb":  17.04,
+                        "freeAfterGb":  42.04,
+                        "defenderAvailable":  true,
+                        "defenderRealTime":  "False",
+                        "exclusionPaths":  [
+
+                                           ],
+                        "defenderNote":  "Get-MpPreference недоступен: Не удалось выполнить операцию. Ошибка: 0x800106ba",
+                        "preferenceAvailable":  false,
+                        "stagingExcluded":  "unknown",
+                        "objectsExcluded":  "unknown"
+                    },
+    "storage":  {
+                    "volumeId":  "c8917f00-7d66-4b4c-8656-62e30cbb2244",
+                    "volumeName":  "Resilience",
+                    "rootPath":  "C:\\Users\\max\\AppData\\Local\\Temp\\nexus-resilience\\disk",
+                    "state":  "online",
+                    "stagingPath":  "C:\\Users\\max\\AppData\\Local\\Temp\\nexus-resilience\\disk\\.nexus\\staging",
+                    "objectsPath":  "C:\\Users\\max\\AppData\\Local\\Temp\\nexus-resilience\\disk\\.nexus\\objects",
+                    "sameVolume":  true,
+                    "sameVolumeMethod":  "GetVolumePathName",
+                    "strategy":  "rename",
+                    "requiredFreeBytes":  27917287424,
+                    "requiredFreeGb":  26,
+                    "requiredWithHeadroomGb":  31,
+                    "headroomGb":  5,
+                    "freeBytes":  37572800512,
+                    "freeGb":  34.99,
+                    "payloadMultiplier":  1
+                },
+    "parameters":  {
+                       "SizeGb":  25,
+                       "FileCount":  500,
+                       "ChunkMb":  8,
+                       "PrivateMemoryLimitMb":  200,
+                       "SampleSeconds":  10,
+                       "Cleanup":  true,
+                       "BaseUrl":  "http://127.0.0.1:8080"
+                   },
+    "payload":  {
+                    "requestedBytes":  26843545600,
+                    "uploadedBytes":  26843545600,
+                    "uploadedGb":  25,
+                    "fileCount":  500,
+                    "minFileBytes":  53687091,
+                    "maxFileBytes":  53687191,
+                    "avgFileBytes":  53687091,
+                    "distinctShaCount":  500,
+                    "duplicateShaCount":  0,
+                    "chunkRequests":  3500,
+                    "objectFilesBefore":  1,
+                    "objectBytesBefore":  200000,
+                    "objectFilesAfter":  501,
+                    "objectBytesAfter":  26843745600,
+                    "objectFilesAdded":  500,
+                    "objectsBytesAdded":  26843545600,
+                    "objectsBytesAddedGb":  25,
+                    "stagingFilesBefore":  1,
+                    "stagingFilesAfter":  1,
+                    "stagingFilesAdded":  0,
+                    "diskFreeDeltaBytes":  19277316096,
+                    "diskUsageNote":  "Дельта свободного места (17,95 ГиБ) отличается от полезной нагрузки (25 ГиБ) более чем на 5%. Во время 11-минутного прогона сторонние процессы освобождали диск (после очистки свободного места стало больше, чем до старта). Фактический объём подтверждён суммой длин файлов в objects: 26 843 545 600 байт и 500 объектов."
+                },
+    "timings":  {
+                    "preflightSeconds":  2.31,
+                    "uploadSeconds":  667.11,
+                    "validateSeconds":  0.01,
+                    "releaseSeconds":  0.28,
+                    "verifySeconds":  1.91,
+                    "cleanupSeconds":  3.42,
+                    "totalSeconds":  675.58
+                },
+    "throughput":  {
+                       "uploadMbPerSecond":  38.37,
+                       "endToEndMbPerSecond":  37.89
+                   },
+    "memory":  {
+                   "available":  true,
+                   "baselineWorkingSetMb":  42,
+                   "baselinePrivateMb":  21.5,
+                   "peakWorkingSetMb":  44,
+                   "peakPrivateMb":  23.5,
+                   "privateDeltaMb":  2,
+                   "thresholdMb":  200,
+                   "passed":  true,
+                   "samples":  65,
+                   "series":  [
+                                  {
+                                      "At":  "2026-11-19T20:21:27.2040830+03:00",
+                                      "WorkingSetMb":  42,
+                                      "PrivateMb":  21.5
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:21:37.2273349+03:00",
+                                      "WorkingSetMb":  40.5,
+                                      "PrivateMb":  20
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:21:47.8277018+03:00",
+                                      "WorkingSetMb":  39.6,
+                                      "PrivateMb":  18.6
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:21:58.4896378+03:00",
+                                      "WorkingSetMb":  39.6,
+                                      "PrivateMb":  18.6
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:22:08.5915180+03:00",
+                                      "WorkingSetMb":  39.7,
+                                      "PrivateMb":  18.6
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:22:18.6265739+03:00",
+                                      "WorkingSetMb":  42.9,
+                                      "PrivateMb":  23
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:22:29.3251323+03:00",
+                                      "WorkingSetMb":  43.1,
+                                      "PrivateMb":  23
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:22:39.3658460+03:00",
+                                      "WorkingSetMb":  43.1,
+                                      "PrivateMb":  23
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:22:50.0436661+03:00",
+                                      "WorkingSetMb":  43.4,
+                                      "PrivateMb":  23.1
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:23:00.9274166+03:00",
+                                      "WorkingSetMb":  42.4,
+                                      "PrivateMb":  22
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:23:10.9383193+03:00",
+                                      "WorkingSetMb":  43.5,
+                                      "PrivateMb":  23.1
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:23:21.5156495+03:00",
+                                      "WorkingSetMb":  43.6,
+                                      "PrivateMb":  23.1
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:23:32.1240926+03:00",
+                                      "WorkingSetMb":  39.4,
+                                      "PrivateMb":  18.4
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:23:42.6635163+03:00",
+                                      "WorkingSetMb":  43.5,
+                                      "PrivateMb":  23
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:23:53.4821537+03:00",
+                                      "WorkingSetMb":  39.4,
+                                      "PrivateMb":  18.4
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:24:03.7571765+03:00",
+                                      "WorkingSetMb":  42.4,
+                                      "PrivateMb":  22
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:24:14.3655473+03:00",
+                                      "WorkingSetMb":  43.1,
+                                      "PrivateMb":  22.1
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:24:24.6959112+03:00",
+                                      "WorkingSetMb":  39.5,
+                                      "PrivateMb":  18.4
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:24:35.2139395+03:00",
+                                      "WorkingSetMb":  43.5,
+                                      "PrivateMb":  23.1
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:24:45.7067197+03:00",
+                                      "WorkingSetMb":  43.8,
+                                      "PrivateMb":  23.3
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:24:56.2084469+03:00",
+                                      "WorkingSetMb":  42.6,
+                                      "PrivateMb":  22.1
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:25:06.3999078+03:00",
+                                      "WorkingSetMb":  42.4,
+                                      "PrivateMb":  22.1
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:25:16.4759063+03:00",
+                                      "WorkingSetMb":  42.1,
+                                      "PrivateMb":  21.6
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:25:26.8538016+03:00",
+                                      "WorkingSetMb":  43.3,
+                                      "PrivateMb":  23.1
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:25:37.0083993+03:00",
+                                      "WorkingSetMb":  43.6,
+                                      "PrivateMb":  23.1
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:25:47.1637978+03:00",
+                                      "WorkingSetMb":  43.5,
+                                      "PrivateMb":  23.2
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:25:57.8840112+03:00",
+                                      "WorkingSetMb":  39.5,
+                                      "PrivateMb":  18.4
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:26:07.9024473+03:00",
+                                      "WorkingSetMb":  39.5,
+                                      "PrivateMb":  18.5
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:26:18.7421253+03:00",
+                                      "WorkingSetMb":  42.7,
+                                      "PrivateMb":  22.3
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:26:29.0091361+03:00",
+                                      "WorkingSetMb":  42.3,
+                                      "PrivateMb":  22.2
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:26:39.5897501+03:00",
+                                      "WorkingSetMb":  43.5,
+                                      "PrivateMb":  23.2
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:26:49.6353047+03:00",
+                                      "WorkingSetMb":  39.5,
+                                      "PrivateMb":  18.5
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:26:59.6795193+03:00",
+                                      "WorkingSetMb":  39.6,
+                                      "PrivateMb":  18.6
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:27:09.6899134+03:00",
+                                      "WorkingSetMb":  43.4,
+                                      "PrivateMb":  23.2
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:27:19.6915302+03:00",
+                                      "WorkingSetMb":  43.8,
+                                      "PrivateMb":  23.2
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:27:29.6918226+03:00",
+                                      "WorkingSetMb":  41.7,
+                                      "PrivateMb":  21.9
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:27:39.7487870+03:00",
+                                      "WorkingSetMb":  42.6,
+                                      "PrivateMb":  22.3
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:27:49.8019087+03:00",
+                                      "WorkingSetMb":  40.5,
+                                      "PrivateMb":  20
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:27:59.9677109+03:00",
+                                      "WorkingSetMb":  42.7,
+                                      "PrivateMb":  22.8
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:28:10.1902938+03:00",
+                                      "WorkingSetMb":  42.9,
+                                      "PrivateMb":  22.1
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:28:20.2507028+03:00",
+                                      "WorkingSetMb":  41.1,
+                                      "PrivateMb":  21
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:28:30.2830929+03:00",
+                                      "WorkingSetMb":  41.3,
+                                      "PrivateMb":  21.8
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:28:40.3383422+03:00",
+                                      "WorkingSetMb":  42.6,
+                                      "PrivateMb":  22.2
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:28:50.4367343+03:00",
+                                      "WorkingSetMb":  39.8,
+                                      "PrivateMb":  18.8
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:29:00.8228250+03:00",
+                                      "WorkingSetMb":  39.7,
+                                      "PrivateMb":  18.7
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:29:11.2248707+03:00",
+                                      "WorkingSetMb":  43.7,
+                                      "PrivateMb":  23.2
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:29:21.2500094+03:00",
+                                      "WorkingSetMb":  41.9,
+                                      "PrivateMb":  21.3
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:29:32.0539242+03:00",
+                                      "WorkingSetMb":  40.1,
+                                      "PrivateMb":  19.1
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:29:42.1008904+03:00",
+                                      "WorkingSetMb":  41.4,
+                                      "PrivateMb":  21.5
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:29:52.1513470+03:00",
+                                      "WorkingSetMb":  42.9,
+                                      "PrivateMb":  22.3
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:30:02.9914257+03:00",
+                                      "WorkingSetMb":  43.6,
+                                      "PrivateMb":  23.4
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:30:13.1048440+03:00",
+                                      "WorkingSetMb":  43.7,
+                                      "PrivateMb":  23.4
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:30:23.2833231+03:00",
+                                      "WorkingSetMb":  39.7,
+                                      "PrivateMb":  18.7
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:30:34.1296132+03:00",
+                                      "WorkingSetMb":  39.7,
+                                      "PrivateMb":  18.7
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:30:44.8117362+03:00",
+                                      "WorkingSetMb":  43.6,
+                                      "PrivateMb":  23.4
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:30:55.6368827+03:00",
+                                      "WorkingSetMb":  43.2,
+                                      "PrivateMb":  22.4
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:31:05.7760829+03:00",
+                                      "WorkingSetMb":  43.7,
+                                      "PrivateMb":  23.4
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:31:16.2097197+03:00",
+                                      "WorkingSetMb":  43.7,
+                                      "PrivateMb":  23.3
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:31:27.0822539+03:00",
+                                      "WorkingSetMb":  44,
+                                      "PrivateMb":  23.5
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:31:37.7857184+03:00",
+                                      "WorkingSetMb":  39.8,
+                                      "PrivateMb":  18.8
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:31:48.2489136+03:00",
+                                      "WorkingSetMb":  39.8,
+                                      "PrivateMb":  18.7
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:31:58.3289271+03:00",
+                                      "WorkingSetMb":  41.9,
+                                      "PrivateMb":  21.5
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:32:08.5205829+03:00",
+                                      "WorkingSetMb":  43.6,
+                                      "PrivateMb":  23.5
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:32:19.1401227+03:00",
+                                      "WorkingSetMb":  43.7,
+                                      "PrivateMb":  23.4
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:32:29.1819219+03:00",
+                                      "WorkingSetMb":  42.8,
+                                      "PrivateMb":  22.4
+                                  }
+                              ]
+               },
+    "sha":  {
+                "clientVsServerMatched":  true,
+                "clientVsManifestMatched":  true,
+                "manifestCount":  500,
+                "distinctManifestShaCount":  500,
+                "mismatches":  [
+
+                               ],
+                "sampleDownloads":  [
+                                        {
+                                            "path":  "mods/g2-0000.jar",
+                                            "sha":  "d248d5ac14415daf28c3d952b9e214cdd275aa428ccd70493c2ff4aca312571a",
+                                            "expected":  "d248d5ac14415daf28c3d952b9e214cdd275aa428ccd70493c2ff4aca312571a",
+                                            "bytes":  53687091,
+                                            "ok":  true
+                                        },
+                                        {
+                                            "path":  "mods/g2-0249.jar",
+                                            "sha":  "b173829f09d685e76643697842290137966046089b9e9937af36154c9aaa1323",
+                                            "expected":  "b173829f09d685e76643697842290137966046089b9e9937af36154c9aaa1323",
+                                            "bytes":  53687091,
+                                            "ok":  true
+                                        },
+                                        {
+                                            "path":  "mods/g2-0499.jar",
+                                            "sha":  "9291def32d698ae1f2c4127cd23e12841f0ecfb10ac47d52b6f0dee03a59cc74",
+                                            "expected":  "9291def32d698ae1f2c4127cd23e12841f0ecfb10ac47d52b6f0dee03a59cc74",
+                                            "bytes":  53687191,
+                                            "ok":  true
+                                        }
+                                    ]
+            },
+    "manifest":  {
+                     "fetchedTwiceEqual":  true,
+                     "stableAfterPublish":  true,
+                     "filesSortedOrdinal":  true,
+                     "schemaVersion":  "1.0",
+                     "fileCount":  500,
+                     "totalBytes":  26843545600,
+                     "totalGb":  25,
+                     "launcherMatchesAdmin":  true
+                 },
+    "range":  {
+                  "passed":  true,
+                  "tests":  [
+                                {
+                                    "path":  "mods/g2-0000.jar",
+                                    "check":  "full download + SHA",
+                                    "status":  200,
+                                    "bytes":  53687091,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0000.jar",
+                                    "check":  "range 0..1MiB-1",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0000.jar",
+                                    "check":  "range middle 1MiB",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0000.jar",
+                                    "check":  "range suffix 4096",
+                                    "status":  206,
+                                    "bytes":  4096,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0249.jar",
+                                    "check":  "full download + SHA",
+                                    "status":  200,
+                                    "bytes":  53687091,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0249.jar",
+                                    "check":  "range 0..1MiB-1",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0249.jar",
+                                    "check":  "range middle 1MiB",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0249.jar",
+                                    "check":  "range suffix 4096",
+                                    "status":  206,
+                                    "bytes":  4096,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0499.jar",
+                                    "check":  "full download + SHA",
+                                    "status":  200,
+                                    "bytes":  53687191,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0499.jar",
+                                    "check":  "range 0..1MiB-1",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0499.jar",
+                                    "check":  "range middle 1MiB",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0499.jar",
+                                    "check":  "range suffix 4096",
+                                    "status":  206,
+                                    "bytes":  4096,
+                                    "ok":  true
+                                }
+                            ]
+              },
+    "artifacts":  {
+                      "buildId":  "8f1e041c-041b-4c9f-8c53-07a02441d52a",
+                      "buildSlug":  "g2-large-build-20261119-202127",
+                      "releaseId":  "05f537c3-f464-4a75-b560-9590a2148aa5",
+                      "releaseVersion":  "1.0.203234",
+                      "launcherTokenId":  ""
+                  },
+    "assertions":  {
+                       "Все файлы загружены":  true,
+                       "Контент уникален (SHA)":  true,
+                       "Клиент = сервер = манифест":  true,
+                       "Фактический объём на диске совпадает":  true,
+                       "Staging не содержит остатков":  true,
+                       "Манифест детерминирован":  true,
+                       "Лаунчер видит тот же манифест":  true,
+                       "Range и полное скачивание":  true,
+                       "Память в пределах порога":  true,
+                       "Сборка проверена и опубликована":  true
+                   },
+    "cleanup":  {
+                    "requested":  true,
+                    "performed":  true,
+                    "freedGb":  25
+                },
+    "blockers":  [
+
+                 ]
+}

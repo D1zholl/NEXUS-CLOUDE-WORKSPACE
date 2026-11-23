@@ -1,0 +1,75 @@
+# NEXUS WORKSPACE — Caddy for Windows (внутренний CA, локальный стенд).
+#
+# Публичный домен: замените localhost/192.168.1.10 на своё DNS-имя и уберите
+# local_certs — Caddy получит сертификат Let's Encrypt (нужны 80/443 и DNS).
+# Локальный стенд: Caddy выпускает сертификат собственным CA; корневой
+# сертификат устанавливается в LocalMachine\Root:
+#   certutil -addstore -f Root C:\Caddy\data\pki\authorities\local\root.crt
+#
+# Служба (NSSM):
+#   nssm install Caddy C:\Caddy\caddy.exe
+#   nssm set Caddy AppParameters "run --config C:\Caddy\Caddyfile --adapter caddyfile"
+#   nssm set Caddy AppDirectory C:\Caddy
+#   nssm set Caddy AppEnvironmentExtra "XDG_DATA_HOME=C:\Caddy\data" "XDG_CONFIG_HOME=C:\Caddy\config"
+#   nssm set Caddy Start SERVICE_AUTO_START
+#   nssm start Caddy
+#
+# Проверка: caddy validate --config C:\Caddy\Caddyfile
+
+{
+	local_certs
+	admin 127.0.0.1:2019
+	storage file_system C:/Caddy/data
+}
+
+# HTTP -> HTTPS. Замените адреса на свои (localhost + LAN IP или DNS-имя).
+http://localhost, http://192.168.1.10 {
+	redir https://{host}{uri} permanent
+}
+
+https://localhost, https://192.168.1.10 {
+	tls internal
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	encode zstd gzip
+
+	# Приложение ограничивает файл 10 ГиБ; Caddy не должен резать чанки.
+	request_body {
+		max_size 11GB
+	}
+
+	@blocked path /backend/* /migrations/* /.env /nexus.toml
+	respond @blocked 404
+
+	reverse_proxy 127.0.0.1:8080 {
+		# Перезаписываем, а не дополняем: подставленный клиентом X-Forwarded-For
+		# не должен попадать в аудит.
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+
+		# WebSocket Upgrade проксируется автоматически. Таймауты рассчитаны
+		# на длительные загрузки и большие Range-ответы.
+		transport http {
+			dial_timeout 10s
+			response_header_timeout 5m
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+
+	log {
+		output file C:/Caddy/logs/nexus-access.log {
+			roll_size 50MiB
+			roll_keep 5
+		}
+		format console
+	}
+}

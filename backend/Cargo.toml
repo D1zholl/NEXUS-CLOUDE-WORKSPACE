@@ -1,0 +1,57 @@
+[package]
+name = "nexus"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.85"
+description = "NEXUS WORKSPACE — modular self-hosted platform"
+license = "MIT"
+
+[dependencies]
+aes-gcm = "0.10"
+anyhow = "1"
+argon2 = "0.5"
+base64 = "0.22"
+axum = { version = "0.8", features = ["macros", "ws", "multipart"] }
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+dashmap = "6"
+dotenvy = "0.15"
+futures-core = "0.3"
+hex = "0.4"
+http-body-util = "0.1"
+infer = "0.22"
+hmac = "0.12"
+jsonschema = { version = "0.61", default-features = false }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+subtle = "2"
+sysinfo = "0.33"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+toml = "0.8"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "cors", "compression-gzip", "set-header", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+unicode-normalization = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tracing-appender = "0.2.5"
+
+[dev-dependencies]
+futures-util = "0.3"
+jsonschema = { version = "0.61", default-features = false }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.29"
+
+[target."cfg(windows)".dependencies]
+windows-service = { version = "0.8.1", default-features = false }

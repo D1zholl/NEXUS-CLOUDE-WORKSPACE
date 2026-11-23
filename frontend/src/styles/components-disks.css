@@ -1,0 +1,35 @@
+/* Источник: app.css, строки 3185–3219. */
+/* ---------- Диски ---------- */
+.disk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.disk {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 20px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.02);
+}
+.disk__name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.disk__meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+}
+.disk__num {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-label);
+  text-align: right;
+}
+.disk .meter {
+  grid-column: 1 / -1;
+}

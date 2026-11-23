@@ -1,0 +1,10 @@
+# Единый стиль форматирования backend (K3).
+# Формат проверяется командой `cargo fmt --all -- --check` в CI.
+# Используются только стабильные опции: nightly-опции не включаем, иначе
+# форматирование на стабильном toolchain молча игнорируется.
+
+edition = "2024"
+max_width = 100
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true

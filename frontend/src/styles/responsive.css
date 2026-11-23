@@ -1,0 +1,300 @@
+/* Источник: app.css, строки 3603–3899. */
+/* ---------- Адаптив ---------- */
+@media (max-width: 1180px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .bg-settings {
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+  .module-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 960px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(300px, 86vw);
+    transform: translateX(-105%);
+    transition: transform 0.32s var(--ease);
+    box-shadow: 30px 0 80px rgba(0, 0, 0, 0.5);
+  }
+  .sidebar--open {
+    transform: none;
+  }
+  .sidebar-toggle {
+    display: inline-flex;
+  }
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 29;
+    background: rgba(2, 6, 13, 0.6);
+    backdrop-filter: blur(3px);
+  }
+  .auth {
+    grid-template-columns: 1fr;
+  }
+  .auth__intro {
+    min-height: 46vh;
+    padding-bottom: 10px;
+  }
+  .auth__brand-hint {
+    display: none;
+  }
+  .auth__hero {
+    margin: 20px 0 0;
+  }
+  .auth__hero h1 {
+    font-size: clamp(30px, 6vw, 44px);
+  }
+  .auth__hero p {
+    display: none;
+  }
+  .auth__features {
+    display: none;
+  }
+  .auth__panel {
+    padding-top: 10px;
+  }
+  .auth__footer {
+    display: none;
+  }
+  .bg-settings {
+    grid-template-columns: 1fr;
+  }
+  .bg-preview {
+    min-height: 420px;
+  }
+  .bg-controls {
+    position: static;
+    max-height: none;
+  }
+  .bg-controls__scroll {
+    max-height: 520px;
+  }
+  .role-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 760px) {
+  .home {
+    padding: 18px;
+  }
+  .home__intro::before {
+    inset: -18px -22px -12px;
+    background: radial-gradient(
+      82% 74% at 28% 46%,
+      rgba(4, 9, 20, 0.88),
+      rgba(4, 9, 20, 0.58) 56%,
+      transparent 84%
+    );
+  }
+  .home__hero {
+    padding: 54px 0 26px;
+  }
+  .home__hero h1 {
+    font-size: clamp(32px, 9vw, 46px);
+  }
+  .module-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .module-card {
+    min-height: 132px;
+    display: grid;
+    grid-template-columns: 46px minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    column-gap: 14px;
+    padding: 16px;
+  }
+  .module-card__icon {
+    grid-row: 1 / 4;
+    margin: 0;
+    align-self: center;
+  }
+  .module-card__title {
+    margin: 0;
+    align-self: end;
+  }
+  .module-card__desc {
+    margin-top: 4px;
+  }
+  .module-card__foot {
+    padding-top: 10px;
+    grid-column: 2;
+  }
+  .home__bottom {
+    padding-top: 22px;
+  }
+  .stats-grid,
+  .grid-2,
+  .grid-3 {
+    grid-template-columns: 1fr;
+  }
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+  .permission-group__list {
+    grid-template-columns: 1fr;
+  }
+  .capability-grid {
+    grid-template-columns: 1fr;
+  }
+  .content {
+    padding: 16px;
+  }
+  .topbar {
+    padding: 0 14px;
+  }
+  .top-actions .status-pill {
+    display: none;
+  }
+  .user-chip__name {
+    display: none;
+  }
+  .user-chip {
+    padding: 0 5px;
+  }
+  .table th,
+  .table td {
+    padding: 10px;
+  }
+  .modal-backdrop {
+    padding: 10px;
+    align-items: end;
+  }
+  .modal {
+    max-height: 92vh;
+  }
+  .toasts {
+    right: 12px;
+    left: 12px;
+    bottom: 12px;
+    max-width: none;
+    align-items: stretch;
+  }
+  .bg-preview {
+    min-height: 340px;
+  }
+  .bg-preview--expanded .bg-preview__hint {
+    display: none;
+  }
+  .cloud-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 9px;
+  }
+  .cloud-card__icon {
+    height: 58px;
+  }
+  .cloud-tools .input-wrap {
+    flex: 1;
+    min-width: 140px;
+  }
+  .cloud-bar__row {
+    gap: 8px;
+  }
+  .cloud-bar__row .grow {
+    display: none;
+  }
+  .cloud-search {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+  .cloud-sort {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .cloud-tabs {
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .cloud-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .cloud-tab {
+    flex: none;
+    padding: 7px 11px;
+    white-space: nowrap;
+  }
+  .cloud-row-name {
+    max-width: 160px;
+  }
+  .public-share {
+    padding: 12px;
+  }
+  .public-share__card {
+    padding: 20px;
+  }
+  .launcher-grid {
+    grid-template-columns: 1fr;
+  }
+}
+/* K4: 360 px — узкий телефон. Скрываем второстепенные элементы верхней
+   панели, чтобы навигация и заголовок не выталкивали друг друга. */
+@media (max-width: 480px) {
+  :root {
+    --topbar-height: 58px;
+  }
+  .topbar {
+    gap: 6px;
+    padding: 0 10px;
+  }
+  .topbar__crumbs {
+    flex: 1 1 auto;
+    gap: 0;
+    font-size: 11px;
+    overflow: hidden;
+  }
+  .topbar__crumbs span {
+    display: none;
+  }
+  .topbar__crumbs strong {
+    max-width: 100%;
+  }
+  .topbar__actions {
+    gap: 4px;
+  }
+  .topbar__actions .status-pill {
+    display: none;
+  }
+  .content {
+    gap: 16px;
+    padding: 12px;
+  }
+  .page-head {
+    gap: 10px;
+  }
+  .page-head::before {
+    inset: -16px -10px -14px;
+  }
+  .page-head__title {
+    font-size: clamp(22px, 7vw, 30px);
+  }
+  .sidebar {
+    padding: 14px 12px 12px;
+  }
+  .nav-link {
+    height: 42px;
+  }
+  .cloud-row-name {
+    max-width: 120px;
+  }
+  .table th,
+  .table td {
+    padding: 8px;
+  }
+}
+@media (max-width: 380px) {
+  .topbar__crumbs strong {
+    max-width: 132px;
+  }
+  .user-chip {
+    padding: 0;
+  }
+}

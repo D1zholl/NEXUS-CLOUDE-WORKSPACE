@@ -1,0 +1,29 @@
+[package]
+name = "nexus-launcher"
+description = "NEXUS Launcher desktop shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+default-run = "nexus-launcher"
+
+[lib]
+name = "nexus_launcher_lib"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "nexus-launcher"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+nexus-core.workspace = true
+nexus-platform.workspace = true
+tauri = { version = "2.12" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true

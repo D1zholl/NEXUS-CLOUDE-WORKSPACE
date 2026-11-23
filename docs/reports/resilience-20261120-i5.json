@@ -1,0 +1,87 @@
+﻿{
+    "result":  "PASS",
+    "generatedAt":  "2026-11-20T10:27:27.5212374+03:00",
+    "command":  "powershell -File tests/resilience.ps1 -DiskFailureMode Vhdx -TestService:True -ReportName \"resilience-20261120-i5\"",
+    "environment":  {
+                        "osCaption":  "Майкрософт Windows 11 Pro",
+                        "osVersion":  "10.0.26300",
+                        "osBuild":  "26300",
+                        "powershell":  "5.1.26100.9444",
+                        "clr":  "4.0.30319.42000",
+                        "cpu":  "Intel(R) Core(TM) 5 210H",
+                        "logicalProcessors":  12,
+                        "ramGb":  15.7,
+                        "filesystem":  "NTFS (VHDX 2048 МБ)",
+                        "defenderRealTime":  false,
+                        "defenderNote":  "",
+                        "postgres":  "17.12",
+                        "admin":  true
+                    },
+    "server":  {
+                   "url":  "http://127.0.0.1:8080",
+                   "pid":  14776,
+                   "version":  "0.1.0",
+                   "health":  "ok"
+               },
+    "disk":  {
+                 "method":  "VHDX + detach (снятие буквы и отключение диска)",
+                 "path":  "C:\\Users\\max\\AppData\\Local\\Temp\\nexus-resilience\\resilience-ec6e2e88.vhdx",
+                 "volumeId":  "4cbdba4f-e21f-44f6-859e-93a5d7ff113d",
+                 "volumeName":  "Resilience ec6e2e88",
+                 "beforeReachable":  true,
+                 "beforeState":  "online",
+                 "failureAction":  "diskpart detach vdisk",
+                 "afterReachable":  false,
+                 "afterState":  "offline",
+                 "uploadAfterFailure":  "HTTP 422 NO_VOLUME_AVAILABLE",
+                 "downloadStatus":  500,
+                 "downloadCode":  "STORAGE_ERROR: Файл отсутствует в хранилище.",
+                 "recovered":  true,
+                 "shaAfterRecovery":  "d3f1277360e9968d1c97e21db3fa67bbdd6c8a15f093a76534940849e10544c4"
+             },
+    "disconnect":  {
+                       "truncated":  true,
+                       "offsetAfter":  0,
+                       "size":  1048576,
+                       "statusAfter":  "active",
+                       "resumed":  true,
+                       "shaOk":  true
+                   },
+    "c2":  {
+               "jobType":  "system.objects.verify",
+               "jobId":  "56fe001a-de11-4156-9e25-62afcdf34e78",
+               "objects":  16,
+               "objectSizeMb":  24,
+               "runningBeforeKill":  true,
+               "killed":  true,
+               "statusAfterKill":  "running",
+               "transitions":  [
+                                   "pending-\u003erunning",
+                                   "running-\u003epending",
+                                   "pending-\u003erunning",
+                                   "running-\u003ecompleted"
+                               ],
+               "recoveredToPending":  true,
+               "restartMethod":  "Start-Process (служба не использовалась для C2)",
+               "restartSeconds":  0.52,
+               "claimedAgain":  true
+           },
+    "service":  {
+                    "tested":  false,
+                    "name":  "NexusResilienceec6e2e88",
+                    "port":  null,
+                    "reason":  "nexus.exe не реализует StartServiceCtrlDispatcher: SCM не получает SERVICE_RUNNING, процесс остаётся StartPending. Start-Service/Restart-Service недоступны; нужен service-wrapper (NSSM/winsw) или windows-service в бинарнике.",
+                    "started":  false,
+                    "healthAfterStart":  false,
+                    "sessionSurvived":  false,
+                    "uptimeBefore":  null,
+                    "uptimeAfter":  null,
+                    "restartSeconds":  null
+                },
+    "limitations":  [
+                        "nexus.exe не реализует StartServiceCtrlDispatcher: SCM не получает SERVICE_RUNNING, процесс остаётся StartPending. Start-Service/Restart-Service недоступны; нужен service-wrapper (NSSM/winsw) или windows-service в бинарнике."
+                    ],
+    "failures":  [
+
+                 ]
+}

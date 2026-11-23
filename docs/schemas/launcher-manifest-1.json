@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexus.local/schemas/launcher-manifest-1.json",
+  "title": "MyLauncher repository manifest",
+  "description": "Точная форма, которую разбирает MyLauncher 0.1.0 (src-tauri/src/modpack.rs, RepositoryManifest). Дополнительные поля клиент игнорирует.",
+  "type": "object",
+  "required": ["manifestVersion", "packId", "version", "name", "minecraft", "java", "files"],
+  "additionalProperties": true,
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "packId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._+-]+$"
+    },
+    "channel": { "enum": ["stable", "beta"] },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "authors": { "type": "array", "items": { "type": "string" } },
+    "categories": { "type": "array", "items": { "type": "string" } },
+    "minecraft": {
+      "type": "object",
+      "required": ["version", "loader"],
+      "additionalProperties": true,
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._+-]+$"
+        },
+        "loader": { "enum": ["vanilla", "fabric", "forge", "neoforge"] },
+        "loaderVersion": {
+          "type": ["string", "null"],
+          "maxLength": 128,
+          "pattern": "^[^/\\\\]*$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "loader": { "not": { "const": "vanilla" } } },
+            "required": ["loader"]
+          },
+          "then": {
+            "properties": { "loaderVersion": { "type": "string", "minLength": 1 } },
+            "required": ["loaderVersion"]
+          }
+        }
+      ]
+    },
+    "java": {
+      "type": "object",
+      "required": ["major"],
+      "additionalProperties": true,
+      "properties": {
+        "major": { "type": "integer", "minimum": 8, "maximum": 30 }
+      }
+    },
+    "files": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "required": ["path", "hash", "size", "url", "required"],
+        "additionalProperties": true,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^(?!/)(?!.*\\\\)(?!.*:)[A-Za-z0-9 _./+@()§-]+$"
+          },
+          "hash": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "size": { "type": "integer", "minimum": 0, "maximum": 8589934592 },
+          "url": {
+            "type": "string",
+            "pattern": "^/api/files/sha256:[0-9a-f]{64}$"
+          },
+          "required": { "type": "boolean" }
+        }
+      }
+    },
+    "settings": { "type": "object" }
+  }
+}

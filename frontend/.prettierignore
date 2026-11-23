@@ -1,0 +1,7 @@
+dist
+node_modules
+playwright-report
+test-results
+coverage
+e2e/.auth
+package-lock.json

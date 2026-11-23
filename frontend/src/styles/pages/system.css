@@ -1,0 +1,113 @@
+/* Источник: app.css, строки 850–962. */
+/* ---------- Мониторинг и задачи ---------- */
+.monitor-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.monitor-bar .segmented {
+  display: inline-flex;
+  width: auto;
+  padding: 4px;
+  background: var(--surface);
+  backdrop-filter: blur(14px);
+}
+.monitor-bar .segmented button {
+  flex: none;
+  padding: 0 14px;
+  height: 30px;
+  font-size: 12px;
+}
+.monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+.chart svg {
+  width: 100%;
+  height: 120px;
+  display: block;
+  overflow: visible;
+}
+.chart--empty {
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.chart__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.core-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px 14px;
+  margin-top: 10px;
+}
+.core {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.core__label {
+  min-width: 18px;
+  color: var(--text-secondary);
+}
+.core .meter {
+  flex: 1;
+}
+.core__value {
+  min-width: 32px;
+  text-align: right;
+  color: var(--text-label);
+}
+
+.job-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.job-action {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 10px 12px;
+  align-items: start;
+}
+.job-action__icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent);
+}
+.job-action__icon svg {
+  width: 17px;
+  height: 17px;
+}
+.job-action__title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.job-action .btn {
+  grid-column: 2;
+  justify-self: start;
+}

@@ -1,0 +1,287 @@
+﻿{
+    "phase":  "G2",
+    "generatedAt":  "2026-11-19T20:20:34.0311673+03:00",
+    "result":  "PASS",
+    "command":  "tests/large-build.ps1 -SizeGb 1 -FileCount 500 -VolumeRoot C:\\Users\\max\\AppData\\Local\\Temp\\nexus-resilience\\disk -ReportDir docs\\reports -ReportName large-build-20261119-smoke1gb -Password *** -Cleanup True",
+    "environment":  {
+                        "hostname":  "ACER-ASPIRE-7",
+                        "osCaption":  "Майкрософт Windows 11 Pro",
+                        "osVersion":  "10.0.26300",
+                        "osBuild":  "26300",
+                        "powershell":  "5.1.26100.9444",
+                        "dotnet":  "4.0.30319.42000",
+                        "filesystem":  "NTFS",
+                        "driveLetter":  "C:",
+                        "driveType":  3,
+                        "physicalDisk":  "Phison ESO512GHLCA1-E9C",
+                        "mediaType":  "SSD",
+                        "busType":  "NVMe",
+                        "totalGb":  475.92,
+                        "freeBeforeGb":  34.99,
+                        "freeAfterUploadGb":  33.99,
+                        "freeAfterGb":  34.99,
+                        "defenderAvailable":  true,
+                        "defenderRealTime":  "False",
+                        "exclusionPaths":  [
+
+                                           ],
+                        "defenderNote":  "Get-MpPreference недоступен: Не удалось выполнить операцию. Ошибка: 0x800106ba",
+                        "preferenceAvailable":  false,
+                        "stagingExcluded":  "unknown",
+                        "objectsExcluded":  "unknown"
+                    },
+    "storage":  {
+                    "volumeId":  "c8917f00-7d66-4b4c-8656-62e30cbb2244",
+                    "volumeName":  "Resilience",
+                    "rootPath":  "C:\\Users\\max\\AppData\\Local\\Temp\\nexus-resilience\\disk",
+                    "state":  "online",
+                    "stagingPath":  "C:\\Users\\max\\AppData\\Local\\Temp\\nexus-resilience\\disk\\.nexus\\staging",
+                    "objectsPath":  "C:\\Users\\max\\AppData\\Local\\Temp\\nexus-resilience\\disk\\.nexus\\objects",
+                    "sameVolume":  true,
+                    "sameVolumeMethod":  "GetVolumePathName",
+                    "strategy":  "rename",
+                    "requiredFreeBytes":  1632087572,
+                    "requiredFreeGb":  1.52,
+                    "requiredWithHeadroomGb":  6.52,
+                    "headroomGb":  5,
+                    "freeBytes":  37575184384,
+                    "freeGb":  34.99,
+                    "payloadMultiplier":  1
+                },
+    "parameters":  {
+                       "SizeGb":  1,
+                       "FileCount":  500,
+                       "ChunkMb":  8,
+                       "PrivateMemoryLimitMb":  200,
+                       "SampleSeconds":  10,
+                       "Cleanup":  true,
+                       "BaseUrl":  "http://127.0.0.1:8080"
+                   },
+    "payload":  {
+                    "requestedBytes":  1073741824,
+                    "uploadedBytes":  1073741824,
+                    "uploadedGb":  1,
+                    "fileCount":  500,
+                    "minFileBytes":  2147483,
+                    "maxFileBytes":  2147807,
+                    "avgFileBytes":  2147484,
+                    "distinctShaCount":  500,
+                    "duplicateShaCount":  0,
+                    "chunkRequests":  500,
+                    "objectFilesBefore":  1,
+                    "objectBytesBefore":  200000,
+                    "objectFilesAfter":  501,
+                    "objectBytesAfter":  1073941824,
+                    "objectFilesAdded":  500,
+                    "objectsBytesAdded":  1073741824,
+                    "objectsBytesAddedGb":  1,
+                    "stagingFilesBefore":  1,
+                    "stagingFilesAfter":  1,
+                    "stagingFilesAdded":  0,
+                    "diskFreeDeltaBytes":  1077571584
+                },
+    "timings":  {
+                    "preflightSeconds":  2.3,
+                    "uploadSeconds":  38.33,
+                    "validateSeconds":  0.02,
+                    "releaseSeconds":  0.26,
+                    "verifySeconds":  0.79,
+                    "cleanupSeconds":  2.7,
+                    "totalSeconds":  45.07
+                },
+    "throughput":  {
+                       "uploadMbPerSecond":  26.72,
+                       "endToEndMbPerSecond":  22.72
+                   },
+    "memory":  {
+                   "available":  true,
+                   "baselineWorkingSetMb":  41.4,
+                   "baselinePrivateMb":  21,
+                   "peakWorkingSetMb":  41.4,
+                   "peakPrivateMb":  21.2,
+                   "privateDeltaMb":  0.2,
+                   "thresholdMb":  200,
+                   "passed":  true,
+                   "samples":  4,
+                   "series":  [
+                                  {
+                                      "At":  "2026-11-19T20:20:36.3199682+03:00",
+                                      "WorkingSetMb":  41.4,
+                                      "PrivateMb":  21
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:20:46.3927027+03:00",
+                                      "WorkingSetMb":  41.1,
+                                      "PrivateMb":  21.2
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:20:56.3936038+03:00",
+                                      "WorkingSetMb":  39.5,
+                                      "PrivateMb":  19.5
+                                  },
+                                  {
+                                      "At":  "2026-11-19T20:21:06.3958700+03:00",
+                                      "WorkingSetMb":  41.1,
+                                      "PrivateMb":  21.2
+                                  }
+                              ]
+               },
+    "sha":  {
+                "clientVsServerMatched":  true,
+                "clientVsManifestMatched":  true,
+                "manifestCount":  500,
+                "distinctManifestShaCount":  500,
+                "mismatches":  [
+
+                               ],
+                "sampleDownloads":  [
+                                        {
+                                            "path":  "mods/g2-0000.jar",
+                                            "sha":  "a8182ea7a9340590be2e43d26529e85ac9c6476532a6b91045db40113691d98a",
+                                            "expected":  "a8182ea7a9340590be2e43d26529e85ac9c6476532a6b91045db40113691d98a",
+                                            "bytes":  2147483,
+                                            "ok":  true
+                                        },
+                                        {
+                                            "path":  "mods/g2-0249.jar",
+                                            "sha":  "e2df1481960745031dadfe90d884fa3756d4658ab721fbe89bc6d0f22da1a37f",
+                                            "expected":  "e2df1481960745031dadfe90d884fa3756d4658ab721fbe89bc6d0f22da1a37f",
+                                            "bytes":  2147483,
+                                            "ok":  true
+                                        },
+                                        {
+                                            "path":  "mods/g2-0499.jar",
+                                            "sha":  "66498332f9722e9de596a7e8e20ed8acd67b1632c880d6ceac5f366b4905617b",
+                                            "expected":  "66498332f9722e9de596a7e8e20ed8acd67b1632c880d6ceac5f366b4905617b",
+                                            "bytes":  2147807,
+                                            "ok":  true
+                                        }
+                                    ]
+            },
+    "manifest":  {
+                     "fetchedTwiceEqual":  true,
+                     "stableAfterPublish":  true,
+                     "filesSortedOrdinal":  true,
+                     "schemaVersion":  "1.0",
+                     "fileCount":  500,
+                     "totalBytes":  1073741824,
+                     "totalGb":  1,
+                     "launcherMatchesAdmin":  true
+                 },
+    "range":  {
+                  "passed":  true,
+                  "tests":  [
+                                {
+                                    "path":  "mods/g2-0000.jar",
+                                    "check":  "full download + SHA",
+                                    "status":  200,
+                                    "bytes":  2147483,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0000.jar",
+                                    "check":  "range 0..1MiB-1",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0000.jar",
+                                    "check":  "range middle 1MiB",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0000.jar",
+                                    "check":  "range suffix 4096",
+                                    "status":  206,
+                                    "bytes":  4096,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0249.jar",
+                                    "check":  "full download + SHA",
+                                    "status":  200,
+                                    "bytes":  2147483,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0249.jar",
+                                    "check":  "range 0..1MiB-1",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0249.jar",
+                                    "check":  "range middle 1MiB",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0249.jar",
+                                    "check":  "range suffix 4096",
+                                    "status":  206,
+                                    "bytes":  4096,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0499.jar",
+                                    "check":  "full download + SHA",
+                                    "status":  200,
+                                    "bytes":  2147807,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0499.jar",
+                                    "check":  "range 0..1MiB-1",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0499.jar",
+                                    "check":  "range middle 1MiB",
+                                    "status":  206,
+                                    "bytes":  1048576,
+                                    "ok":  true
+                                },
+                                {
+                                    "path":  "mods/g2-0499.jar",
+                                    "check":  "range suffix 4096",
+                                    "status":  206,
+                                    "bytes":  4096,
+                                    "ok":  true
+                                }
+                            ]
+              },
+    "artifacts":  {
+                      "buildId":  "df24b07c-51f2-4ea1-872f-8b2b3348a6c0",
+                      "buildSlug":  "g2-large-build-20261119-202036",
+                      "releaseId":  "177702cc-2c41-4d93-87d6-8c7a0e58c4a4",
+                      "releaseVersion":  "1.0.202114",
+                      "launcherTokenId":  ""
+                  },
+    "assertions":  {
+                       "Все файлы загружены":  true,
+                       "Контент уникален (SHA)":  true,
+                       "Клиент = сервер = манифест":  true,
+                       "Фактический объём на диске совпадает":  true,
+                       "Staging не содержит остатков":  true,
+                       "Манифест детерминирован":  true,
+                       "Лаунчер видит тот же манифест":  true,
+                       "Range и полное скачивание":  true,
+                       "Память в пределах порога":  true,
+                       "Сборка проверена и опубликована":  true
+                   },
+    "cleanup":  {
+                    "requested":  true,
+                    "performed":  true,
+                    "freedGb":  1
+                },
+    "blockers":  [
+
+                 ]
+}

@@ -1,0 +1,305 @@
+/* Источник: app.css, строки 1392–1695. */
+/* ---------- Формы ---------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.field__label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.field__hint {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.field__error {
+  font-size: 12px;
+  color: var(--danger);
+}
+.input,
+.select,
+.textarea {
+  width: 100%;
+  height: 44px;
+  padding: 0 14px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  background: rgba(4, 10, 20, 0.55);
+  color: var(--text-primary);
+  outline: none;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s,
+    background 0.2s;
+}
+.textarea {
+  height: auto;
+  min-height: 100px;
+  padding: 12px 14px;
+  resize: vertical;
+}
+.input::placeholder,
+.textarea::placeholder {
+  color: rgba(145, 165, 192, 0.62);
+}
+.input:hover,
+.select:hover,
+.textarea:hover {
+  border-color: rgba(var(--accent-rgb), 0.38);
+}
+.input:focus,
+.select:focus,
+.textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.14);
+  background: rgba(4, 10, 20, 0.8);
+}
+.input--with-icon {
+  padding-left: 42px;
+}
+.input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.input-wrap > svg {
+  position: absolute;
+  left: 14px;
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+.input-wrap__action {
+  position: absolute;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.input-wrap__action:hover {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+.input-wrap__action svg {
+  width: 16px;
+  height: 16px;
+}
+.select {
+  appearance: none;
+  padding-right: 38px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%),
+    linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 20px,
+    calc(100% - 13px) 20px;
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.form-grid .field--full {
+  grid-column: 1 / -1;
+}
+
+.checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-label);
+}
+.checkbox input {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: rgba(4, 10, 20, 0.7);
+  display: grid;
+  place-items: center;
+  flex: none;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+.checkbox input::after {
+  content: '';
+  width: 9px;
+  height: 5px;
+  border-left: 2px solid #04121f;
+  border-bottom: 2px solid #04121f;
+  transform: rotate(-45deg) scale(0);
+  transition: transform 0.15s var(--ease);
+}
+.checkbox input:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.checkbox input:checked::after {
+  transform: rotate(-45deg) scale(1);
+}
+
+/* Переключатель */
+.switch {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  flex: none;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  transition:
+    background 0.22s,
+    border-color 0.22s,
+    opacity 0.16s var(--ease);
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition:
+    transform 0.22s var(--ease),
+    background 0.22s;
+}
+.switch[aria-checked='true'] {
+  background: rgba(var(--accent-rgb), 0.24);
+  border-color: rgba(var(--accent-rgb), 0.62);
+}
+.switch[aria-checked='true']::after {
+  transform: translateX(18px);
+  background: var(--accent);
+  box-shadow: 0 0 12px rgba(var(--accent-rgb), 0.9);
+}
+.switch:disabled {
+  opacity: 0.5;
+}
+
+/* Диапазон */
+.range {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.range__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.range__head label {
+  font-size: 12.5px;
+  color: var(--text-label);
+  font-weight: 500;
+}
+.range__head output {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+}
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  --fill: 50%;
+}
+input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    rgba(var(--accent-rgb), 0.95) var(--fill),
+    rgba(255, 255, 255, 0.09) var(--fill)
+  );
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #071120;
+  box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.9);
+  transition: transform 0.15s;
+}
+input[type='range']:hover::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.09);
+}
+input[type='range']::-moz-range-progress {
+  height: 4px;
+  border-radius: 4px;
+  background: rgba(var(--accent-rgb), 0.95);
+}
+input[type='range']::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #071120;
+  box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.9);
+}
+
+/* Сегменты */
+.segmented {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.035);
+}
+.segmented button {
+  flex: 1;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  transition:
+    background 0.18s,
+    color 0.18s;
+}
+.segmented button[aria-pressed='true'] {
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.35);
+}

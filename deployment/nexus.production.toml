@@ -1,0 +1,52 @@
+# NEXUS WORKSPACE — production-конфигурация.
+#
+# Скопируйте в nexus.toml рядом с исполняемым файлом или укажите путь
+# через NEXUS_CONFIG. Переменные окружения из .env имеют приоритет.
+#
+# NEXUS_SECRET берётся ТОЛЬКО из окружения/файла .env и не хранится здесь.
+
+[server]
+# За обратным прокси слушаем только localhost — наружу выходит прокси.
+host = "127.0.0.1"
+port = 8080
+# Публичный адрес используется в ссылках общего доступа и в письмах.
+public_url = "https://nexus.example.com"
+# Путь к собранному frontend (npm run build).
+static_dir = "../frontend/dist"
+# Включайте, только если сервер стоит за доверенным прокси (Caddy).
+trust_proxy = true
+
+[database]
+# Пароль храните в .env или в защищённом файле, не в репозитории.
+url = "postgres://nexus:CHANGE_ME@127.0.0.1:5432/nexus"
+max_connections = 20
+
+[security]
+# Cookie с флагом Secure обязателен при HTTPS.
+cookie_secure = true
+session_ttl_hours = 24
+# Минимальная длина пароля для CLI (API берёт значение из system_settings).
+password_min_length = 12
+# Разрешённые origin для CORS; пусто - same-origin (нормальный режим).
+allowed_origins = []
+
+[storage]
+# 10 ГиБ на файл; чанк 64 МиБ.
+max_upload_bytes = 10737418240
+chunk_max_bytes = 67108864
+upload_ttl_hours = 24
+share_default_hours = 168
+export_ttl_hours = 6
+
+[launcher]
+# Лимиты Launcher API на один токен. Всплеск равен значению в минуту.
+requests_per_minute = 120
+artifacts_per_minute = 600
+# Одновременных скачиваний артефактов на токен.
+max_parallel_downloads = 8
+
+[logging]
+# Каталог журналов. Для службы Windows укажите абсолютный путь.
+dir = "./logs"
+file = "nexus.log"
+keep_files = 7

@@ -1,0 +1,144 @@
+# NEXUS AI Runtime — пример конфигурации.
+# Скопируйте в C:\NexusAI\runtime.toml и заполните значения.
+# Секреты (device token) хранятся отдельно в state\device.json и не входят в этот файл.
+
+[server]
+# Production: wss://nexus.example.com/api/v1/ai/runtime/connect
+url = "wss://nexus.example.com/api/v1/ai/runtime/connect"
+# Для enrollment: https://nexus.example.com
+enroll_url = "https://nexus.example.com"
+name = "AI-WORKSTATION"
+# Разрешить ws:// только для локальной отладки.
+allow_insecure_ws = false
+heartbeat_seconds = 20
+reconnect_min_seconds = 2
+reconnect_max_seconds = 60
+
+[storage]
+state_dir = "C:\\NexusAI\\state"
+token_file = "device.json"
+receipts_file = "receipts.jsonl"
+# Workspace, созданные администратором, обязаны находиться внутри этих корней.
+allowed_roots = ["C:\\NexusAI\\workspaces"]
+log_dir = "C:\\NexusAI\\logs"
+
+[provider]
+# PolyStrata запущена на этом же компьютере.
+base_url = "http://127.0.0.1:8080/v1"
+api_key = ""
+timeout_seconds = 180
+connect_timeout_seconds = 10
+
+[limits]
+max_parallel_tasks = 4
+max_tool_output_bytes = 262144
+max_file_bytes = 16777216
+max_search_files = 2000
+max_search_results = 200
+max_directory_entries = 1000
+default_tool_timeout_seconds = 120
+skip_directories = [".git", "node_modules", "target", "dist", ".venv", "__pycache__"]
+
+[logging]
+level = "info"
+keep_files = 14
+
+# Программы, которые разрешено запускать агенту. Модель не может добавить
+# программу или сформировать shell-команду: executable берётся только отсюда.
+# Укажите реальные пути на этом компьютере.
+
+[[programs]]
+program_id = "git"
+name = "Git"
+executable = "C:\\Program Files\\Git\\cmd\\git.exe"
+version = "2.x"
+risk = "high"
+allow_any_args = false
+arg_patterns = ["^[A-Za-z0-9._/\\\\:-]{1,250}$"]
+timeout_seconds = 120
+max_output_bytes = 131072
+
+[[programs]]
+program_id = "python"
+name = "Python"
+executable = "C:\\Python312\\python.exe"
+version = "3.12"
+risk = "high"
+allow_any_args = false
+arg_patterns = ["^[A-Za-z0-9._/\\\\-]{1,250}$"]
+timeout_seconds = 300
+max_output_bytes = 262144
+
+[[programs]]
+program_id = "node"
+name = "Node.js"
+executable = "C:\\Program Files\\nodejs\\node.exe"
+version = "22.x"
+risk = "high"
+allow_any_args = false
+arg_patterns = ["^[A-Za-z0-9._/\\\\-]{1,250}$"]
+timeout_seconds = 300
+max_output_bytes = 262144
+
+[[programs]]
+program_id = "npm"
+name = "npm"
+executable = "C:\\Program Files\\nodejs\\npm.cmd"
+version = "11.x"
+risk = "high"
+allow_any_args = false
+arg_patterns = ["^[A-Za-z0-9._/\\\\-]{1,250}$"]
+timeout_seconds = 300
+max_output_bytes = 262144
+
+[[programs]]
+program_id = "cargo"
+name = "Rust Cargo"
+executable = "C:\\Users\\max\\.cargo\\bin\\cargo.exe"
+version = "1.x"
+risk = "high"
+allow_any_args = false
+arg_patterns = ["^[A-Za-z0-9._:-]{1,200}$"]
+timeout_seconds = 600
+max_output_bytes = 262144
+
+[[programs]]
+program_id = "powershell"
+name = "PowerShell (только -File)"
+executable = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+version = "5.1"
+risk = "critical"
+allow_any_args = false
+# -Command/-EncodedCommand намеренно не разрешены.
+arg_patterns = [
+  "^-NoProfile$",
+  "^-NonInteractive$",
+  "^-ExecutionPolicy$",
+  "^RemoteSigned$",
+  "^-File$",
+  "^[A-Za-z0-9._/][A-Za-z0-9._/\\\\-]{0,199}$"
+]
+timeout_seconds = 600
+max_output_bytes = 262144
+
+[[programs]]
+program_id = "ffmpeg"
+name = "FFmpeg"
+executable = "C:\\ffmpeg\\bin\\ffmpeg.exe"
+version = "7.x"
+risk = "high"
+allow_any_args = false
+arg_patterns = ["^[A-Za-z0-9._/\\\\:-]{1,250}$"]
+timeout_seconds = 600
+max_output_bytes = 262144
+
+[[programs]]
+program_id = "playwright"
+name = "Playwright"
+executable = "C:\\Program Files\\nodejs\\npx.cmd"
+version = "1.x"
+risk = "critical"
+allow_any_args = false
+arg_patterns = ["^[A-Za-z0-9._:-]{1,200}$"]
+timeout_seconds = 900
+max_output_bytes = 262144

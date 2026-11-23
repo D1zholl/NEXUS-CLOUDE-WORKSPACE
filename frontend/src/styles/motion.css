@@ -1,0 +1,408 @@
+/* ---------- Единая система UI-анимаций ---------- */
+
+/* Появление страницы. Анимируется только opacity: transform на обёртке
+   создал бы containing block для position: fixed (модальные окна, панели). */
+.page-transition {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  flex: 1;
+  min-width: 0;
+  animation: page-fade var(--motion-slow) var(--ease-out) backwards;
+}
+
+/* Переключение внутренних вкладок: короткий fade без сдвигов. */
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-width: 0;
+  animation: panel-fade var(--motion-base) var(--ease-out) backwards;
+}
+
+.wizard-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: panel-fade var(--motion-base) var(--ease-out) backwards;
+}
+
+.home,
+.public-share__card {
+  animation: page-fade var(--motion-slow) var(--ease-out) backwards;
+}
+
+/* Спиннер загрузки в кнопке не должен «вспыхивать» между состояниями. */
+.btn__spinner {
+  animation:
+    spin 0.7s linear infinite,
+    ui-fade-in var(--motion-fast) var(--ease-out);
+}
+
+@keyframes ui-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes page-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes panel-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ---------- Появление карточек и строк ---------- */
+
+@keyframes surface-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes row-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes content-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.stats-grid > *,
+.module-grid > *,
+.cloud-grid > *,
+.role-grid > *,
+.monitor-grid > *,
+.job-actions > *,
+.launcher-grid > *,
+.grid-2 > *,
+.grid-3 > * {
+  animation: surface-in var(--motion-base) var(--ease-out) backwards;
+}
+
+:is(
+    .stats-grid,
+    .module-grid,
+    .cloud-grid,
+    .role-grid,
+    .monitor-grid,
+    .job-actions,
+    .launcher-grid,
+    .grid-2,
+    .grid-3
+  )
+  > :nth-child(2) {
+  animation-delay: 24ms;
+}
+:is(
+    .stats-grid,
+    .module-grid,
+    .cloud-grid,
+    .role-grid,
+    .monitor-grid,
+    .job-actions,
+    .launcher-grid,
+    .grid-2,
+    .grid-3
+  )
+  > :nth-child(3) {
+  animation-delay: 48ms;
+}
+:is(
+    .stats-grid,
+    .module-grid,
+    .cloud-grid,
+    .role-grid,
+    .monitor-grid,
+    .job-actions,
+    .launcher-grid,
+    .grid-2,
+    .grid-3
+  )
+  > :nth-child(4) {
+  animation-delay: 72ms;
+}
+:is(
+    .stats-grid,
+    .module-grid,
+    .cloud-grid,
+    .role-grid,
+    .monitor-grid,
+    .job-actions,
+    .launcher-grid,
+    .grid-2,
+    .grid-3
+  )
+  > :nth-child(5) {
+  animation-delay: 96ms;
+}
+:is(
+    .stats-grid,
+    .module-grid,
+    .cloud-grid,
+    .role-grid,
+    .monitor-grid,
+    .job-actions,
+    .launcher-grid,
+    .grid-2,
+    .grid-3
+  )
+  > :nth-child(6) {
+  animation-delay: 120ms;
+}
+
+/* Большие наборы не анимируем целиком: первая шестёрка задаёт ритм,
+   остальные элементы появляются сразу и не создают лишней нагрузки. */
+:is(.cloud-grid, .role-grid, .monitor-grid, .job-actions, .grid-2, .grid-3) > :nth-child(n + 7) {
+  animation: none;
+}
+
+.info-list__row {
+  animation: row-in var(--motion-base) var(--ease-out) backwards;
+}
+.info-list__row:nth-child(2) {
+  animation-delay: 18ms;
+}
+.info-list__row:nth-child(3) {
+  animation-delay: 36ms;
+}
+.info-list__row:nth-child(4) {
+  animation-delay: 54ms;
+}
+.info-list__row:nth-child(n + 7) {
+  animation: none;
+}
+
+/* Таблицы: только opacity, чтобы не задеть hover-transform строк. */
+.table tbody tr {
+  animation: row-in 0.16s var(--ease-out) backwards;
+}
+.table tbody tr:nth-child(2) {
+  animation-delay: 14ms;
+}
+.table tbody tr:nth-child(3) {
+  animation-delay: 28ms;
+}
+.table tbody tr:nth-child(4) {
+  animation-delay: 42ms;
+}
+.table tbody tr:nth-child(5) {
+  animation-delay: 56ms;
+}
+.table tbody tr:nth-child(n + 6) {
+  animation: none;
+}
+
+.release-card,
+.token-card,
+.volume-card,
+.issue,
+.drop-row,
+.cloud-share-row,
+.upload-item,
+.transfer-item,
+.validation-report {
+  animation: content-reveal var(--motion-base) var(--ease-out) backwards;
+}
+
+/* ---------- Состояния загрузки, пустоты и ошибок ---------- */
+
+.loading-screen,
+.alert,
+.empty,
+.state-panel,
+.field__error {
+  animation: content-reveal var(--motion-fast) var(--ease-out) backwards;
+}
+
+.table__empty {
+  animation: content-reveal var(--motion-fast) var(--ease-out) backwards;
+}
+
+/* Раскрывающиеся блоки (<details>) — мягкое проявление содержимого. */
+details > summary {
+  transition: color var(--motion-fast) var(--ease);
+}
+details[open] > :not(summary) {
+  animation: content-reveal var(--motion-fast) var(--ease-out) backwards;
+}
+
+/* ---------- Модальные окна ---------- */
+
+.modal-backdrop--closing {
+  pointer-events: none;
+  animation: backdrop-out var(--motion-base) var(--ease-in) forwards;
+}
+
+.modal-backdrop--closing .modal {
+  animation: modal-out var(--motion-base) var(--ease-in) forwards;
+}
+
+@keyframes backdrop-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-out {
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+}
+
+/* ---------- Выпадающие меню ---------- */
+
+.dropdown--closing {
+  pointer-events: none;
+  animation: dropdown-out var(--motion-fast) var(--ease-in) forwards;
+}
+
+@keyframes dropdown-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+/* ---------- Боковые панели ---------- */
+
+.build-drawer--closing {
+  pointer-events: none;
+  animation: drawer-out var(--motion-base) var(--ease-in) forwards;
+}
+
+@keyframes drawer-out {
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+
+.sidebar-overlay {
+  animation: page-fade var(--motion-fast) var(--ease-out) backwards;
+}
+
+/* ---------- Интерактивные элементы ---------- */
+
+.dropdown__item,
+.user-chip,
+.cloud-crumb,
+.cloud-check,
+.input-wrap__action,
+.transfer-item__link,
+.cloud-row-name,
+.cloud-card__name,
+.link-back,
+.toast,
+.chip {
+  transition:
+    background-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease),
+    box-shadow var(--motion-fast) var(--ease),
+    transform var(--motion-fast) var(--ease);
+}
+
+.cloud-check:active,
+.dropdown__item:active,
+.toast:active {
+  transform: scale(0.985);
+}
+
+/* ---------- prefers-reduced-motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .page-transition,
+  .tab-panel,
+  .wizard-body,
+  .home,
+  .public-share__card,
+  .stats-grid > *,
+  .module-grid > *,
+  .cloud-grid > *,
+  .role-grid > *,
+  .monitor-grid > *,
+  .job-actions > *,
+  .launcher-grid > *,
+  .grid-2 > *,
+  .grid-3 > *,
+  .info-list__row,
+  .table tbody tr,
+  .release-card,
+  .token-card,
+  .volume-card,
+  .issue,
+  .drop-row,
+  .cloud-share-row,
+  .upload-item,
+  .transfer-item,
+  .validation-report,
+  .loading-screen,
+  .alert,
+  .empty,
+  .state-panel,
+  .field__error,
+  .notice-card,
+  .table__empty,
+  details[open] > :not(summary),
+  .toast,
+  .modal-backdrop,
+  .modal,
+  .modal-backdrop--closing,
+  .modal-backdrop--closing .modal,
+  .dropdown,
+  .dropdown--closing,
+  .build-drawer,
+  .build-drawer--closing,
+  .sidebar-overlay,
+  .status-pill__dot,
+  .auth__card,
+  .auth__error,
+  .cloud-selection,
+  .transfer-drawer {
+    animation: none !important;
+  }
+
+  .btn,
+  .nav-link,
+  .input,
+  .select,
+  .textarea,
+  .switch,
+  .switch::after,
+  .checkbox input,
+  .checkbox input::after,
+  .segmented button,
+  .cloud-tab,
+  .cloud-card,
+  .cloud-card__thumb,
+  .dropdown__item,
+  .user-chip,
+  .table tbody tr,
+  .meter__fill,
+  .modal,
+  .modal-backdrop,
+  .toast,
+  .cloud-crumb,
+  .cloud-check,
+  .input-wrap__action,
+  .field__error,
+  .build-drawer,
+  .transfer-item,
+  .notice-card,
+  details > summary {
+    transition-duration: 0.01ms !important;
+  }
+}

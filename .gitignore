@@ -1,0 +1,91 @@
+# ---------------------------------------------------------------------------
+# NEXUS Workspace — repository ignore rules
+# Never commit secrets, local databases, runtime state or user files.
+# ---------------------------------------------------------------------------
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+secrets/
+secret/
+credentials.json
+
+# Build outputs
+target/
+debug/
+release/
+node_modules/
+frontend/dist/
+frontend/.vite/
+NEXUS-Launcher/target/
+NEXUS-Launcher/frontend/dist/
+*.pdb
+*.exe
+*.msi
+*.dll
+*.lib
+*.rlib
+*.rmeta
+
+# Rust / test caches
+.cargo/
+*.profraw
+*.profdata
+coverage/
+
+# Logs and diagnostics
+logs/
+*.log
+*.log.*
+*.etl
+crashdumps/
+
+# Runtime device credentials and mutable state
+runtime/state/
+runtime/logs/
+runtime.toml
+!runtime.toml.example
+
+# Local databases, backups and dumps
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.backup
+*.bak
+backups/
+backup/
+
+# User content / workspace data
+users/
+userdata/
+workspace-data/
+storage/
+uploads/
+tmp/
+temp/
+
+# Playwright / test artifacts (auth state contains session cookies)
+frontend/e2e/.auth/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/.cache/
+.playwright/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local notes that may contain environment-specific data
+*.local
+*.local.*
