@@ -35,11 +35,19 @@
 - **Runtime** — enrollment code, статусы, heartbeat, версии, PolyStrata,
   программы, rotate/disable/revoke.
 - **Workspaces** — owner, Runtime, root (только admin), квоты, лимиты,
-  allowed tools/programs, suspend/resume.
-- **Skills** — ZIP import, checksum/version, enable/disable, назначения, удаление.
-- **Tools & Programs** — risk/approval/timeout/output policy, локальные программы.
+  allowed tools/programs, network policy, usage refresh, suspend/resume.
+- **Skills** — ZIP import, checksum/version, полный snapshot версий,
+  history/restore, enable/disable, назначения, удаление.
+- **Tools & Programs** — risk/approval/timeout/output policy, локальные
+  программы, network policy и memory limit.
+- **MCP** — соединения (HTTP), allowPrivateNetwork/SSRF, discovery tools,
+  назначение пользователю, включение/выключение, удаление.
 - **Quotas** — задачи/параллельность/tool calls/time/storage/files.
 - **Security & Logs** — AI audit и Runtime log.
+
+Примечание: `maxParallelTasks` и user storage-quota отображаются, но текущий
+admission control использует `maxConcurrentTasks`, `maxTasksPerDay`,
+`maxToolCallsPerTask`, `maxTaskSeconds` и workspace-квоты Runtime.
 
 Все элементы связаны с реальными API; при отсутствии данных UI показывает
 «нет данных», а не фиктивные нули. См. [`AI_WORKSPACE.md`](AI_WORKSPACE.md).

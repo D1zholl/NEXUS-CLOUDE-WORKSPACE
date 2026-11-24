@@ -991,7 +991,7 @@ curl -sS -b cookies.txt \
 $Base = "http://localhost:8080"
 $Login = Invoke-RestMethod -Method Post -Uri "$Base/api/v1/auth/login" `
   -ContentType "application/json" `
-  -Body (@{ username = "admin"; password = "SecretPass1!" } | ConvertTo-Json) `
+  -Body (@{ username = "admin"; password = "<password>" } | ConvertTo-Json) `
   -SessionVariable Session
 $Csrf = $Login.data.csrfToken
 $Headers = @{ "X-CSRF-Token" = $Csrf }
@@ -1060,7 +1060,7 @@ $Token = Invoke-RestMethod -Method Post -Uri "$Base/api/v1/launcher/auth/token" 
   -Body (@{
     name = "nexus-launcher"
     username = "player"
-    password = "SecretPass1!"
+    password = "<password>"
     scopes = @("launcher.catalog", "launcher.artifacts")
     expiresInHours = 720
   } | ConvertTo-Json)
@@ -1097,296 +1097,312 @@ node scripts/gen-api-doc.mjs
 ```
 
 <!-- BEGIN GENERATED ENDPOINTS -->
-> Всего путей: **173**, операций: **208**.
+> Всего путей: **185**, операций: **224**.
 > Таблица генерируется из `docs/openapi.json` командой `node scripts/gen-api-doc.mjs`.
 
-### Auth — ╨Р╨▓╤В╨╛╤А╨╕╨╖╨░╤Ж╨╕╤П ╨╕ ╤Б╨╡╤Б╤Б╨╕╨╕
+### Auth — Авторизация и сессии
 
 | Метод | Путь | Описание | Доступ |
 |---|---|---|---|
-| `POST` | `/api/v1/auth/login` | ╨Т╤Е╨╛╨┤ ╨┐╨╛ ╨╗╨╛╨│╨╕╨╜╤Г ╨╕ ╨┐╨░╤А╨╛╨╗╤О | — |
-| `POST` | `/api/v1/auth/logout` | ╨Т╤Л╤Е╨╛╨┤ | — |
-| `GET` | `/api/v1/auth/me` | ╨в╨╡╨║╤Г╤Й╨╕╨╣ ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤М ╨╕ ╨┐╤А╨░╨▓╨░ | Cookie |
-| `POST` | `/api/v1/auth/password` | ╨б╨╝╨╡╨╜╨░ ╨┐╨░╤А╨╛╨╗╤П | Cookie + CSRF |
-| `POST` | `/api/v1/auth/sessions/revoke-all` | ╨Ч╨░╨▓╨╡╤А╤И╨╕╤В╤М ╨▓╤Б╨╡ ╤Б╨╡╤Б╤Б╨╕╨╕ | Cookie + CSRF |
-| `GET` | `/api/v1/auth/setup-status` | ╨Э╤Г╨╢╨╜╨░ ╨╗╨╕ ╨┐╨╡╤А╨▓╨╕╤З╨╜╨░╤П ╨╜╨░╤Б╤В╤А╨╛╨╣╨║╨░ | — |
+| `POST` | `/api/v1/auth/login` | Вход по логину и паролю | — |
+| `POST` | `/api/v1/auth/logout` | Выход | — |
+| `GET` | `/api/v1/auth/me` | Текущий пользователь и права | Cookie |
+| `POST` | `/api/v1/auth/password` | Смена пароля | Cookie + CSRF |
+| `POST` | `/api/v1/auth/sessions/revoke-all` | Завершить все сессии | Cookie + CSRF |
+| `GET` | `/api/v1/auth/setup-status` | Нужна ли первичная настройка | — |
 
-### Users — ╨Я╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╨╕ ╨╕ ╨║╨▓╨╛╤В╤Л
-
-| Метод | Путь | Описание | Доступ |
-|---|---|---|---|
-| `GET` | `/api/v1/users` | ╨б╨┐╨╕╤Б╨╛╨║ ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╨╡╨╣ | Cookie |
-| `POST` | `/api/v1/users` | ╨б╨╛╨╖╨┤╨░╤В╤М ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П | Cookie + CSRF |
-| `GET` | `/api/v1/users/{id}` | ╨Я╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤М | Cookie |
-| `PATCH` | `/api/v1/users/{id}` | ╨Ш╨╖╨╝╨╡╨╜╨╕╤В╤М ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П, ╨║╨▓╨╛╤В╤Г ╨╕ ╨┐╤А╨░╨▓╨░ | Cookie + CSRF |
-| `DELETE` | `/api/v1/users/{id}` | ╨г╨┤╨░╨╗╨╕╤В╤М ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П | Cookie + CSRF |
-| `POST` | `/api/v1/users/{id}/password` | ╨б╨▒╤А╨╛╤Б╨╕╤В╤М ╨┐╨░╤А╨╛╨╗╤М | Cookie + CSRF |
-| `POST` | `/api/v1/users/{id}/sessions/revoke` | ╨Ч╨░╨▓╨╡╤А╤И╨╕╤В╤М ╤Б╨╡╤Б╤Б╨╕╨╕ ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П | Cookie + CSRF |
-| `POST` | `/api/v1/users/{id}/unlock` | ╨а╨░╨╖╨▒╨╗╨╛╨║╨╕╤А╨╛╨▓╨░╤В╤М ╨░╨║╨║╨░╤Г╨╜╤В | Cookie + CSRF |
-
-### Roles — ╨а╨╛╨╗╨╕ ╨╕ ╨│╤А╨░╨╜╤Г╨╗╤П╤А╨╜╤Л╨╡ ╨┐╤А╨░╨▓╨░
+### Users — Пользователи и квоты
 
 | Метод | Путь | Описание | Доступ |
 |---|---|---|---|
-| `GET` | `/api/v1/permissions` | ╨Ъ╨░╤В╨░╨╗╨╛╨│ ╨┐╤А╨░╨▓ | Cookie |
-| `GET` | `/api/v1/roles` | ╨б╨┐╨╕╤Б╨╛╨║ ╤А╨╛╨╗╨╡╨╣ | Cookie |
-| `POST` | `/api/v1/roles` | ╨б╨╛╨╖╨┤╨░╤В╤М ╤А╨╛╨╗╤М | Cookie + CSRF |
-| `PATCH` | `/api/v1/roles/{id}` | ╨Ш╨╖╨╝╨╡╨╜╨╕╤В╤М ╤А╨╛╨╗╤М | Cookie + CSRF |
-| `DELETE` | `/api/v1/roles/{id}` | ╨г╨┤╨░╨╗╨╕╤В╤М ╤А╨╛╨╗╤М | Cookie + CSRF |
+| `GET` | `/api/v1/users` | Список пользователей | Cookie |
+| `POST` | `/api/v1/users` | Создать пользователя | Cookie + CSRF |
+| `GET` | `/api/v1/users/{id}` | Пользователь | Cookie |
+| `PATCH` | `/api/v1/users/{id}` | Изменить пользователя, квоту и права | Cookie + CSRF |
+| `DELETE` | `/api/v1/users/{id}` | Удалить пользователя | Cookie + CSRF |
+| `POST` | `/api/v1/users/{id}/password` | Сбросить пароль | Cookie + CSRF |
+| `POST` | `/api/v1/users/{id}/sessions/revoke` | Завершить сессии пользователя | Cookie + CSRF |
+| `POST` | `/api/v1/users/{id}/unlock` | Разблокировать аккаунт | Cookie + CSRF |
 
-### Settings — ╨Я╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤М╤Б╨║╨╕╨╡ ╨╕ ╤Б╨╕╤Б╤В╨╡╨╝╨╜╤Л╨╡ ╨╜╨░╤Б╤В╤А╨╛╨╣╨║╨╕
+### Roles — Роли и гранулярные права
 
 | Метод | Путь | Описание | Доступ |
 |---|---|---|---|
-| `GET` | `/api/v1/me/settings` | ╨Э╨░╤Б╤В╤А╨╛╨╣╨║╨╕ ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П | Cookie |
-| `PUT` | `/api/v1/me/settings/{key}` | ╨б╨╛╤Е╤А╨░╨╜╨╕╤В╤М ╨╜╨░╤Б╤В╤А╨╛╨╣╨║╤Г ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П | Cookie + CSRF |
-| `GET` | `/api/v1/me/usage` | ╨Ш╤Б╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╨╜╨╕╨╡ ╨║╨▓╨╛╤В╤Л | Cookie |
-| `GET` | `/api/v1/public/appearance/background` | 3D-╤Д╨╛╨╜ ╨┤╨╗╤П ╤Б╤В╤А╨░╨╜╨╕╤Ж ╨▒╨╡╨╖ ╤Б╨╡╤Б╤Б╨╕╨╕ | — |
-| `GET` | `/api/v1/system/settings` | ╨б╨╕╤Б╤В╨╡╨╝╨╜╤Л╨╡ ╨╜╨░╤Б╤В╤А╨╛╨╣╨║╨╕ | Cookie |
-| `PUT` | `/api/v1/system/settings/{key}` | ╨б╨╛╤Е╤А╨░╨╜╨╕╤В╤М ╤Б╨╕╤Б╤В╨╡╨╝╨╜╤Г╤О ╨╜╨░╤Б╤В╤А╨╛╨╣╨║╤Г | Cookie + CSRF |
-| `GET` | `/api/v1/system/settings/catalog` | ╨а╨╡╨╡╤Б╤В╤А ╤Б╨╕╤Б╤В╨╡╨╝╨╜╤Л╤Е ╨╜╨░╤Б╤В╤А╨╛╨╡╨║ | Cookie |
+| `GET` | `/api/v1/permissions` | Каталог прав | Cookie |
+| `GET` | `/api/v1/roles` | Список ролей | Cookie |
+| `POST` | `/api/v1/roles` | Создать роль | Cookie + CSRF |
+| `PATCH` | `/api/v1/roles/{id}` | Изменить роль | Cookie + CSRF |
+| `DELETE` | `/api/v1/roles/{id}` | Удалить роль | Cookie + CSRF |
 
-### System — ╨б╨╛╤Б╤В╨╛╤П╨╜╨╕╨╡ ╤Б╨╕╤Б╤В╨╡╨╝╤Л ╨╕ ╨╝╨╛╨┤╤Г╨╗╨╕
+### Settings — Пользовательские и системные настройки
+
+| Метод | Путь | Описание | Доступ |
+|---|---|---|---|
+| `GET` | `/api/v1/me/settings` | Настройки пользователя | Cookie |
+| `PUT` | `/api/v1/me/settings/{key}` | Сохранить настройку пользователя | Cookie + CSRF |
+| `GET` | `/api/v1/me/usage` | Использование квоты | Cookie |
+| `GET` | `/api/v1/public/appearance/background` | 3D-фон для страниц без сессии | — |
+| `GET` | `/api/v1/system/settings` | Системные настройки | Cookie |
+| `PUT` | `/api/v1/system/settings/{key}` | Сохранить системную настройку | Cookie + CSRF |
+| `GET` | `/api/v1/system/settings/catalog` | Реестр системных настроек | Cookie |
+
+### System — Состояние системы и модули
 
 | Метод | Путь | Описание | Доступ |
 |---|---|---|---|
 | `GET` | `/api/v1/docs` | Swagger UI (NEXUS_ENABLE_DOCS) | — |
-| `GET` | `/api/v1/health` | ╨б╨╛╤Б╤В╨╛╤П╨╜╨╕╨╡ ╤Б╨╡╤А╨▓╨╡╤А╨░ | — |
-| `GET` | `/api/v1/openapi.json` | ╨б╨┐╨╡╤Ж╨╕╤Д╨╕╨║╨░╤Ж╨╕╤П OpenAPI 3.1 | — |
-| `GET` | `/api/v1/system/audit` | ╨Ц╤Г╤А╨╜╨░╨╗ ╤Б╨╛╨▒╤Л╤В╨╕╨╣ | Cookie |
-| `GET` | `/api/v1/system/modules` | ╨б╨╛╤Б╤В╨╛╤П╨╜╨╕╨╡ ╨╝╨╛╨┤╤Г╨╗╨╡╨╣ | Cookie |
-| `PUT` | `/api/v1/system/modules/{key}` | ╨Т╨║╨╗╤О╤З╨╕╤В╤М ╨╕╨╗╨╕ ╨╛╤В╨║╨╗╤О╤З╨╕╤В╤М ╨╝╨╛╨┤╤Г╨╗╤М | Cookie + CSRF |
-| `GET` | `/api/v1/system/overview` | ╨Ю╨▒╨╖╨╛╤А ╤Б╨╕╤Б╤В╨╡╨╝╤Л | Cookie |
+| `GET` | `/api/v1/health` | Состояние сервера | — |
+| `GET` | `/api/v1/openapi.json` | Спецификация OpenAPI 3.1 | — |
+| `GET` | `/api/v1/system/audit` | Журнал событий | Cookie |
+| `GET` | `/api/v1/system/modules` | Состояние модулей | Cookie |
+| `PUT` | `/api/v1/system/modules/{key}` | Включить или отключить модуль | Cookie + CSRF |
+| `GET` | `/api/v1/system/overview` | Обзор системы | Cookie |
 
-### Storage — ╨Ф╨╕╤Б╨║╨╕ ╨╕ ╤В╨╛╨╝╨░ ╤Е╤А╨░╨╜╨╡╨╜╨╕╤П
-
-| Метод | Путь | Описание | Доступ |
-|---|---|---|---|
-| `GET` | `/api/v1/storage/browse` | ╨Ю╨▒╨╖╨╛╤А ╨║╨░╤В╨░╨╗╨╛╨│╨╛╨▓ ╤Б╨╡╤А╨▓╨╡╤А╨░ | Cookie |
-| `GET` | `/api/v1/storage/disks` | ╨д╨╕╨╖╨╕╤З╨╡╤Б╨║╨╕╨╡ ╨┤╨╕╤Б╨║╨╕ | Cookie |
-| `GET` | `/api/v1/storage/owners` | ╨Я╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╨╕ ╨┤╨╗╤П ╨┐╤А╨╕╨▓╤П╨╖╨║╨╕ ╤В╨╛╨╝╨░ | Cookie |
-| `GET` | `/api/v1/storage/summary` | ╨б╨▓╨╛╨┤╨║╨░ ╤Е╤А╨░╨╜╨╕╨╗╨╕╤Й | Cookie |
-| `GET` | `/api/v1/storage/volumes` | ╨в╨╛╨╝╨░ ╤Е╤А╨░╨╜╨╡╨╜╨╕╤П | Cookie |
-| `POST` | `/api/v1/storage/volumes` | ╨Ч╨░╤А╨╡╨│╨╕╤Б╤В╤А╨╕╤А╨╛╨▓╨░╤В╤М ╤В╨╛╨╝ | Cookie + CSRF |
-| `PATCH` | `/api/v1/storage/volumes/{id}` | ╨Ш╨╖╨╝╨╡╨╜╨╕╤В╤М ╤В╨╛╨╝ | Cookie + CSRF |
-| `DELETE` | `/api/v1/storage/volumes/{id}` | ╨г╨┤╨░╨╗╨╕╤В╤М ╤В╨╛╨╝ | Cookie + CSRF |
-| `POST` | `/api/v1/storage/volumes/{id}/check` | ╨Я╤А╨╛╨▓╨╡╤А╨╕╤В╤М ╤В╨╛╨╝ | Cookie + CSRF |
-| `POST` | `/api/v1/storage/volumes/scan` | ╨Я╤А╨╛╨▓╨╡╤А╨╕╤В╤М ╨║╨░╤В╨░╨╗╨╛╨│ ╨┐╨╡╤А╨╡╨┤ ╤А╨╡╨│╨╕╤Б╤В╤А╨░╤Ж╨╕╨╡╨╣ ╤В╨╛╨╝╨░ | Cookie + CSRF |
-
-### Cloud — ╨Ю╨▒╨╗╨░╤З╨╜╨╛╨╡ ╤Е╤А╨░╨╜╨╕╨╗╨╕╤Й╨╡
+### Storage — Диски и тома хранения
 
 | Метод | Путь | Описание | Доступ |
 |---|---|---|---|
-| `GET` | `/api/v1/cloud/config` | ╨Ы╨╕╨╝╨╕╤В╤Л ╨╖╨░╨│╤А╤Г╨╖╨║╨╕ | Cookie |
-| `GET` | `/api/v1/cloud/entries` | ╨б╨┐╨╕╤Б╨╛╨║ ╤Д╨░╨╣╨╗╨╛╨▓ ╨╕ ╨┐╨░╨┐╨╛╨║ | Cookie |
-| `POST` | `/api/v1/cloud/entries` | ╨б╨╛╨╖╨┤╨░╤В╤М ╨┐╨░╨┐╨║╤Г | Cookie + CSRF |
-| `GET` | `/api/v1/cloud/entries/{id}` | ╨б╨▓╨╡╨┤╨╡╨╜╨╕╤П ╨╛ ╨╖╨░╨┐╨╕╤Б╨╕ | Cookie |
-| `PATCH` | `/api/v1/cloud/entries/{id}` | ╨Я╨╡╤А╨╡╨╕╨╝╨╡╨╜╨╛╨▓╨░╤В╤М ╨╕╨╗╨╕ ╨┐╨╡╤А╨╡╨╝╨╡╤Б╤В╨╕╤В╤М ╨╖╨░╨┐╨╕╤Б╤М (Idempotency-Key ╨┐╤А╨╕ strategy=replace) | Cookie + CSRF |
-| `DELETE` | `/api/v1/cloud/entries/{id}` | ╨Я╨╡╤А╨╡╨╝╨╡╤Б╤В╨╕╤В╤М ╨▓ ╨║╨╛╤А╨╖╨╕╨╜╤Г | Cookie + CSRF |
-| `GET` | `/api/v1/cloud/entries/{id}/download` | ╨б╨║╨░╤З╨░╤В╤М ╤Д╨░╨╣╨╗ (Range) | Cookie |
-| `GET` | `/api/v1/cloud/entries/{id}/preview` | ╨Я╤А╨╡╨┤╨┐╤А╨╛╤Б╨╝╨╛╤В╤А ╤Д╨░╨╣╨╗╨░ | Cookie |
-| `DELETE` | `/api/v1/cloud/entries/{id}/purge` | ╨г╨┤╨░╨╗╨╕╤В╤М ╨▒╨╡╨╖╨▓╨╛╨╖╨▓╤А╨░╤В╨╜╨╛ | Cookie + CSRF |
-| `POST` | `/api/v1/cloud/entries/{id}/restore` | ╨Т╨╛╤Б╤Б╤В╨░╨╜╨╛╨▓╨╕╤В╤М ╨╕╨╖ ╨║╨╛╤А╨╖╨╕╨╜╤Л | Cookie + CSRF |
-| `POST` | `/api/v1/cloud/entries/batch` | ╨б╨╛╨╖╨┤╨░╤В╤М ╨┐╨░╨┐╨║╨╕ ╨┐╨░╨║╨╡╤В╨╜╨╛ (╨┤╨╛ 200 ╨╕╨╝╤С╨╜) | Cookie + CSRF |
-| `GET` | `/api/v1/cloud/exports` | ╨б╨┐╨╕╤Б╨╛╨║ ╨░╤А╤Е╨╕╨▓╨╛╨▓ | Cookie |
-| `POST` | `/api/v1/cloud/exports` | ╨б╨╛╨╖╨┤╨░╤В╤М ZIP-╨░╤А╤Е╨╕╨▓ (Idempotency-Key) | Cookie + CSRF |
-| `GET` | `/api/v1/cloud/exports/{id}` | ╨б╨╛╤Б╤В╨╛╤П╨╜╨╕╨╡ ╨░╤А╤Е╨╕╨▓╨░ | Cookie |
-| `DELETE` | `/api/v1/cloud/exports/{id}` | ╨г╨┤╨░╨╗╨╕╤В╤М ╨░╤А╤Е╨╕╨▓ ╨╕ ╨╖╨░╨┐╨╕╤Б╤М ╨╖╨░╨┤╨░╤З╨╕ | Cookie + CSRF |
-| `GET` | `/api/v1/cloud/exports/{id}/file` | ╨б╨║╨░╤З╨░╤В╤М ╨░╤А╤Е╨╕╨▓ | Cookie |
-| `GET` | `/api/v1/cloud/shares` | ╨б╨┐╨╕╤Б╨╛╨║ ╤Б╤Б╤Л╨╗╨╛╨║ ╨╛╨▒╤Й╨╡╨│╨╛ ╨┤╨╛╤Б╤В╤Г╨┐╨░ | Cookie |
-| `POST` | `/api/v1/cloud/shares` | ╨б╨╛╨╖╨┤╨░╤В╤М ╤Б╤Б╤Л╨╗╨║╤Г (Idempotency-Key) | Cookie + CSRF |
-| `DELETE` | `/api/v1/cloud/shares/{id}` | ╨Ю╤В╨╛╨╖╨▓╨░╤В╤М ╤Б╤Б╤Л╨╗╨║╤Г | Cookie + CSRF |
-| `DELETE` | `/api/v1/cloud/trash` | ╨Ю╤З╨╕╤Б╤В╨╕╤В╤М ╨║╨╛╤А╨╖╨╕╨╜╤Г | Cookie + CSRF |
-| `POST` | `/api/v1/cloud/uploads` | ╨Э╨░╤З╨░╤В╤М ╨▓╨╛╨╖╨╛╨▒╨╜╨╛╨▓╨╗╤П╨╡╨╝╤Г╤О ╨╖╨░╨│╤А╤Г╨╖╨║╤Г | Cookie + CSRF |
-| `GET` | `/api/v1/cloud/uploads/{id}` | ╨б╨╝╨╡╤Й╨╡╨╜╨╕╨╡ ╨╖╨░╨│╤А╤Г╨╖╨║╨╕ | Cookie |
-| `PATCH` | `/api/v1/cloud/uploads/{id}` | ╨Ч╨░╨┐╨╕╤Б╨░╤В╤М ╤З╨░╨╜╨║ | Cookie + CSRF |
-| `DELETE` | `/api/v1/cloud/uploads/{id}` | ╨Ю╤В╨╝╨╡╨╜╨╕╤В╤М ╨╖╨░╨│╤А╤Г╨╖╨║╤Г | Cookie + CSRF |
-| `POST` | `/api/v1/cloud/uploads/{id}/complete` | ╨Ч╨░╨▓╨╡╤А╤И╨╕╤В╤М ╨╖╨░╨│╤А╤Г╨╖╨║╤Г (Idempotency-Key) | Cookie + CSRF |
+| `GET` | `/api/v1/storage/browse` | Обзор каталогов сервера | Cookie |
+| `GET` | `/api/v1/storage/disks` | Физические диски | Cookie |
+| `GET` | `/api/v1/storage/owners` | Пользователи для привязки тома | Cookie |
+| `GET` | `/api/v1/storage/summary` | Сводка хранилищ | Cookie |
+| `GET` | `/api/v1/storage/volumes` | Тома хранения | Cookie |
+| `POST` | `/api/v1/storage/volumes` | Зарегистрировать том | Cookie + CSRF |
+| `PATCH` | `/api/v1/storage/volumes/{id}` | Изменить том | Cookie + CSRF |
+| `DELETE` | `/api/v1/storage/volumes/{id}` | Удалить том | Cookie + CSRF |
+| `POST` | `/api/v1/storage/volumes/{id}/check` | Проверить том | Cookie + CSRF |
+| `POST` | `/api/v1/storage/volumes/scan` | Проверить каталог перед регистрацией тома | Cookie + CSRF |
 
-### Public — ╨Я╤Г╨▒╨╗╨╕╤З╨╜╤Л╨╡ ╤Б╤Б╤Л╨╗╨║╨╕
+### Cloud — Облачное хранилище
 
 | Метод | Путь | Описание | Доступ |
 |---|---|---|---|
-| `GET` | `/api/v1/public/shares/{token}` | ╨б╨▓╨╡╨┤╨╡╨╜╨╕╤П ╨╛ ╨┐╤Г╨▒╨╗╨╕╤З╨╜╨╛╨╣ ╤Б╤Б╤Л╨╗╨║╨╡ | — |
-| `GET` | `/api/v1/public/shares/{token}/download` | ╨б╨║╨░╤З╨░╤В╤М ╨┐╨╛ ╨┐╤Г╨▒╨╗╨╕╤З╨╜╨╛╨╣ ╤Б╤Б╤Л╨╗╨║╨╡ | — |
-| `POST` | `/api/v1/public/shares/{token}/unlock` | ╨Я╤А╨╛╨▓╨╡╤А╨╕╤В╤М ╨┐╨░╤А╨╛╨╗╤М ╨╕ ╨┐╨╛╨╗╤Г╤З╨╕╤В╤М ╤В╨╕╨║╨╡╤В ╤Б╨║╨░╤З╨╕╨▓╨░╨╜╨╕╤П | — |
+| `GET` | `/api/v1/cloud/config` | Лимиты загрузки | Cookie |
+| `GET` | `/api/v1/cloud/entries` | Список файлов и папок | Cookie |
+| `POST` | `/api/v1/cloud/entries` | Создать папку | Cookie + CSRF |
+| `GET` | `/api/v1/cloud/entries/{id}` | Сведения о записи | Cookie |
+| `PATCH` | `/api/v1/cloud/entries/{id}` | Переименовать или переместить запись (Idempotency-Key при strategy=replace) | Cookie + CSRF |
+| `DELETE` | `/api/v1/cloud/entries/{id}` | Переместить в корзину | Cookie + CSRF |
+| `GET` | `/api/v1/cloud/entries/{id}/download` | Скачать файл (Range) | Cookie |
+| `GET` | `/api/v1/cloud/entries/{id}/preview` | Предпросмотр файла | Cookie |
+| `DELETE` | `/api/v1/cloud/entries/{id}/purge` | Удалить безвозвратно | Cookie + CSRF |
+| `POST` | `/api/v1/cloud/entries/{id}/restore` | Восстановить из корзины | Cookie + CSRF |
+| `POST` | `/api/v1/cloud/entries/batch` | Создать папки пакетно (до 200 имён) | Cookie + CSRF |
+| `GET` | `/api/v1/cloud/exports` | Список архивов | Cookie |
+| `POST` | `/api/v1/cloud/exports` | Создать ZIP-архив (Idempotency-Key) | Cookie + CSRF |
+| `GET` | `/api/v1/cloud/exports/{id}` | Состояние архива | Cookie |
+| `DELETE` | `/api/v1/cloud/exports/{id}` | Удалить архив и запись задачи | Cookie + CSRF |
+| `GET` | `/api/v1/cloud/exports/{id}/file` | Скачать архив | Cookie |
+| `GET` | `/api/v1/cloud/shares` | Список ссылок общего доступа | Cookie |
+| `POST` | `/api/v1/cloud/shares` | Создать ссылку (Idempotency-Key) | Cookie + CSRF |
+| `DELETE` | `/api/v1/cloud/shares/{id}` | Отозвать ссылку | Cookie + CSRF |
+| `DELETE` | `/api/v1/cloud/trash` | Очистить корзину | Cookie + CSRF |
+| `POST` | `/api/v1/cloud/uploads` | Начать возобновляемую загрузку | Cookie + CSRF |
+| `GET` | `/api/v1/cloud/uploads/{id}` | Смещение загрузки | Cookie |
+| `PATCH` | `/api/v1/cloud/uploads/{id}` | Записать чанк | Cookie + CSRF |
+| `DELETE` | `/api/v1/cloud/uploads/{id}` | Отменить загрузку | Cookie + CSRF |
+| `POST` | `/api/v1/cloud/uploads/{id}/complete` | Завершить загрузку (Idempotency-Key) | Cookie + CSRF |
 
-### Minecraft — ╨б╨▒╨╛╤А╨║╨╕, ╤Д╨░╨╣╨╗╤Л ╨╕ ╤А╨╡╨╗╨╕╨╖╤Л
-
-| Метод | Путь | Описание | Доступ |
-|---|---|---|---|
-| `GET` | `/api/v1/minecraft/builds` | ╨б╨┐╨╕╤Б╨╛╨║ ╤Б╨▒╨╛╤А╨╛╨║ | Cookie |
-| `POST` | `/api/v1/minecraft/builds` | ╨б╨╛╨╖╨┤╨░╤В╤М ╤Б╨▒╨╛╤А╨║╤Г | Cookie + CSRF |
-| `GET` | `/api/v1/minecraft/builds/{id}` | ╨б╨▒╨╛╤А╨║╨░ ╤Б ╤Д╨░╨╣╨╗╨░╨╝╨╕ ╨╕ ╤А╨╡╨╗╨╕╨╖╨░╨╝╨╕ | Cookie |
-| `PATCH` | `/api/v1/minecraft/builds/{id}` | ╨Ш╨╖╨╝╨╡╨╜╨╕╤В╤М ╤Б╨▒╨╛╤А╨║╤Г | Cookie + CSRF |
-| `DELETE` | `/api/v1/minecraft/builds/{id}` | ╨г╨┤╨░╨╗╨╕╤В╤М ╤Б╨▒╨╛╤А╨║╤Г | Cookie + CSRF |
-| `POST` | `/api/v1/minecraft/builds/{id}/archive` | ╨Р╤А╤Е╨╕╨▓╨╕╤А╨╛╨▓╨░╤В╤М ╤Б╨▒╨╛╤А╨║╤Г | Cookie + CSRF |
-| `POST` | `/api/v1/minecraft/builds/{id}/clone` | ╨Ъ╨╗╨╛╨╜╨╕╤А╨╛╨▓╨░╤В╤М ╤Б╨▒╨╛╤А╨║╤Г | Cookie + CSRF |
-| `GET` | `/api/v1/minecraft/builds/{id}/files` | ╨д╨░╨╣╨╗╤Л ╤Б╨▒╨╛╤А╨║╨╕ | Cookie |
-| `DELETE` | `/api/v1/minecraft/builds/{id}/files` | ╨г╨┤╨░╨╗╨╕╤В╤М ╨▓╤Б╨╡ ╤Д╨░╨╣╨╗╤Л | Cookie + CSRF |
-| `PATCH` | `/api/v1/minecraft/builds/{id}/files/{file_id}` | ╨Ш╨╖╨╝╨╡╨╜╨╕╤В╤М ╤Д╨░╨╣╨╗ | Cookie + CSRF |
-| `DELETE` | `/api/v1/minecraft/builds/{id}/files/{file_id}` | ╨г╨┤╨░╨╗╨╕╤В╤М ╤Д╨░╨╣╨╗ | Cookie + CSRF |
-| `POST` | `/api/v1/minecraft/builds/{id}/files/{file_id}/replace` | ╨Ч╨░╨╝╨╡╨╜╨╕╤В╤М ╤Б╨╛╨┤╨╡╤А╨╢╨╕╨╝╨╛╨╡ ╤Д╨░╨╣╨╗╨░ | Cookie + CSRF |
-| `POST` | `/api/v1/minecraft/builds/{id}/files/folder` | ╨б╨╛╨╖╨┤╨░╤В╤М ╨┐╨░╨┐╨║╤Г | Cookie + CSRF |
-| `GET` | `/api/v1/minecraft/builds/{id}/history` | ╨Ш╤Б╤В╨╛╤А╨╕╤П ╨╕╨╖╨╝╨╡╨╜╨╡╨╜╨╕╨╣ | Cookie |
-| `GET` | `/api/v1/minecraft/builds/{id}/icon` | ╨Ш╨║╨╛╨╜╨║╨░ ╤Б╨▒╨╛╤А╨║╨╕ | Cookie |
-| `PUT` | `/api/v1/minecraft/builds/{id}/icon` | ╨Ч╨░╨│╤А╤Г╨╖╨╕╤В╤М ╨╕╨║╨╛╨╜╨║╤Г | Cookie + CSRF |
-| `DELETE` | `/api/v1/minecraft/builds/{id}/icon` | ╨г╨┤╨░╨╗╨╕╤В╤М ╨╕╨║╨╛╨╜╨║╤Г | Cookie + CSRF |
-| `GET` | `/api/v1/minecraft/builds/{id}/releases` | ╨а╨╡╨╗╨╕╨╖╤Л ╤Б╨▒╨╛╤А╨║╨╕ | Cookie |
-| `POST` | `/api/v1/minecraft/builds/{id}/releases` | ╨б╨╛╨╖╨┤╨░╤В╤М ╤А╨╡╨╗╨╕╨╖ | Cookie + CSRF |
-| `GET` | `/api/v1/minecraft/builds/{id}/releases/{release_id}` | ╨а╨╡╨╗╨╕╨╖ | Cookie |
-| `POST` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/activate` | ╨б╨┤╨╡╨╗╨░╤В╤М ╤А╨╡╨╗╨╕╨╖ ╤В╨╡╨║╤Г╤Й╨╕╨╝ | Cookie + CSRF |
-| `POST` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/archive` | ╨Р╤А╤Е╨╕╨▓╨╕╤А╨╛╨▓╨░╤В╤М ╤А╨╡╨╗╨╕╨╖ | Cookie + CSRF |
-| `POST` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/deprecate` | ╨Я╨╛╨╝╨╡╤В╨╕╤В╤М ╤А╨╡╨╗╨╕╨╖ ╤Г╤Б╤В╨░╤А╨╡╨▓╤И╨╕╨╝ | Cookie + CSRF |
-| `GET` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/launcher-manifest` | ╨Ь╨░╨╜╨╕╤Д╨╡╤Б╤В MyLauncher ╨┤╨╗╤П ╤А╨╡╨╗╨╕╨╖╨░ | Cookie |
-| `GET` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/manifest` | ╨Ь╨░╨╜╨╕╤Д╨╡╤Б╤В ╤А╨╡╨╗╨╕╨╖╨░ | Cookie |
-| `POST` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/publish` | ╨Ю╨┐╤Г╨▒╨╗╨╕╨║╨╛╨▓╨░╤В╤М ╤А╨╡╨╗╨╕╨╖ | Cookie + CSRF |
-| `GET` | `/api/v1/minecraft/builds/{id}/releases/compare` | ╨б╤А╨░╨▓╨╜╨╕╤В╤М ╤А╨╡╨╗╨╕╨╖╤Л | Cookie |
-| `POST` | `/api/v1/minecraft/builds/{id}/restore` | ╨Т╨╛╤Б╤Б╤В╨░╨╜╨╛╨▓╨╕╤В╤М ╤Б╨▒╨╛╤А╨║╤Г | Cookie + CSRF |
-| `POST` | `/api/v1/minecraft/builds/{id}/unpublish` | ╨б╨╜╤П╤В╤М ╤Б╨▒╨╛╤А╨║╤Г ╤Б ╨┐╤Г╨▒╨╗╨╕╨║╨░╤Ж╨╕╨╕ | Cookie + CSRF |
-| `POST` | `/api/v1/minecraft/builds/{id}/validate` | ╨Я╤А╨╛╨▓╨╡╤А╨╕╤В╤М ╤Б╨▒╨╛╤А╨║╤Г | Cookie + CSRF |
-| `GET` | `/api/v1/minecraft/metadata/fabric` | ╨Т╨╡╤А╤Б╨╕╨╕ Fabric | Cookie |
-| `GET` | `/api/v1/minecraft/metadata/forge` | ╨Т╨╡╤А╤Б╨╕╨╕ Forge | Cookie |
-| `GET` | `/api/v1/minecraft/metadata/loaders` | ╨б╨╛╨▓╨╝╨╡╤Б╤В╨╕╨╝╤Л╨╡ ╨▓╨╡╤А╤Б╨╕╨╕ ╨╖╨░╨│╤А╤Г╨╖╤З╨╕╨║╨░ | Cookie |
-| `GET` | `/api/v1/minecraft/metadata/minecraft` | ╨Т╨╡╤А╤Б╨╕╨╕ Minecraft | Cookie |
-| `GET` | `/api/v1/minecraft/metadata/neoforge` | ╨Т╨╡╤А╤Б╨╕╨╕ NeoForge | Cookie |
-| `GET` | `/api/v1/minecraft/metadata/quilt` | ╨Т╨╡╤А╤Б╨╕╨╕ Quilt | Cookie |
-| `GET` | `/api/v1/minecraft/stats` | ╨б╨▓╨╛╨┤╨║╨░ ╨┐╨╛ ╤Б╨▒╨╛╤А╨║╨░╨╝ | Cookie |
-| `POST` | `/api/v1/minecraft/uploads` | ╨Э╨░╤З╨░╤В╤М ╨╖╨░╨│╤А╤Г╨╖╨║╤Г ╨░╤А╤В╨╡╤Д╨░╨║╤В╨░ | Cookie + CSRF |
-| `GET` | `/api/v1/minecraft/uploads/{id}` | ╨б╨╝╨╡╤Й╨╡╨╜╨╕╨╡ ╨╖╨░╨│╤А╤Г╨╖╨║╨╕ ╨░╤А╤В╨╡╤Д╨░╨║╤В╨░ | Cookie |
-| `PATCH` | `/api/v1/minecraft/uploads/{id}` | ╨Ч╨░╨┐╨╕╤Б╨░╤В╤М ╤З╨░╨╜╨║ ╨░╤А╤В╨╡╤Д╨░╨║╤В╨░ | Cookie + CSRF |
-| `DELETE` | `/api/v1/minecraft/uploads/{id}` | ╨Ю╤В╨╝╨╡╨╜╨╕╤В╤М ╨╖╨░╨│╤А╤Г╨╖╨║╤Г ╨░╤А╤В╨╡╤Д╨░╨║╤В╨░ | Cookie + CSRF |
-| `POST` | `/api/v1/minecraft/uploads/{id}/complete` | ╨Ч╨░╨▓╨╡╤А╤И╨╕╤В╤М ╨╖╨░╨│╤А╤Г╨╖╨║╤Г ╨░╤А╤В╨╡╤Д╨░╨║╤В╨░ (Idempotency-Key) | Cookie + CSRF |
-| `GET` | `/api/v1/minecraft/uploads/config` | ╨Ы╨╕╨╝╨╕╤В╤Л ╨╖╨░╨│╤А╤Г╨╖╨║╨╕ ╨░╤А╤В╨╡╤Д╨░╨║╤В╨╛╨▓ | Cookie |
-
-### Launcher — API ╨┤╨╗╤П ╨║╨╗╨╕╨╡╨╜╤В╨░ ╨╗╨░╤Г╨╜╤З╨╡╤А╨░
+### Public — Публичные ссылки
 
 | Метод | Путь | Описание | Доступ |
 |---|---|---|---|
-| `GET` | `/api/files/{hash}` | ╨д╨░╨╣╨╗ ╤Б╨▒╨╛╤А╨║╨╕ MyLauncher | — |
-| `GET` | `/api/packs` | ╨Ъ╨░╤В╨░╨╗╨╛╨│ ╤Б╨▒╨╛╤А╨╛╨║ MyLauncher | — |
-| `GET` | `/api/packs/{pack_id}/icon` | ╨Ш╨║╨╛╨╜╨║╨░ ╤Б╨▒╨╛╤А╨║╨╕ MyLauncher | — |
-| `GET` | `/api/packs/{pack_id}/versions` | ╨Т╨╡╤А╤Б╨╕╨╕ ╤Б╨▒╨╛╤А╨║╨╕ MyLauncher | — |
-| `GET` | `/api/packs/{pack_id}/versions/{version}/manifest` | ╨Ь╨░╨╜╨╕╤Д╨╡╤Б╤В MyLauncher | — |
-| `GET` | `/api/v1/admin/launcher/repository` | ╨Я╨░╤А╨░╨╝╨╡╤В╤А╤Л ╤А╨╡╨┐╨╛╨╖╨╕╤В╨╛╤А╨╕╤П MyLauncher | Cookie |
-| `GET` | `/api/v1/admin/launcher/tokens` | ╨в╨╛╨║╨╡╨╜╤Л ╨╗╨░╤Г╨╜╤З╨╡╤А╨░ | Cookie |
-| `DELETE` | `/api/v1/admin/launcher/tokens/{id}` | ╨Ю╤В╨╛╨╖╨▓╨░╤В╤М ╤В╨╛╨║╨╡╨╜ | Cookie + CSRF |
-| `GET` | `/api/v1/launcher/artifacts/{id}` | ╨б╨║╨░╤З╨░╤В╤М ╨░╤А╤В╨╡╤Д╨░╨║╤В | Bearer · launcher.artifacts |
-| `POST` | `/api/v1/launcher/auth/revoke` | ╨Ю╤В╨╛╨╖╨▓╨░╤В╤М ╤Б╨▓╨╛╨╣ ╤В╨╛╨║╨╡╨╜ | Bearer |
-| `POST` | `/api/v1/launcher/auth/token` | ╨Т╤Л╨┤╨░╤В╤М ╤В╨╛╨║╨╡╨╜ ╨╗╨░╤Г╨╜╤З╨╡╤А╨░ | — |
-| `GET` | `/api/v1/launcher/builds` | ╨б╨┐╨╕╤Б╨╛╨║ ╤Б╨▒╨╛╤А╨╛╨║ | Bearer · launcher.catalog |
-| `GET` | `/api/v1/launcher/builds/{slug}` | ╨б╨▒╨╛╤А╨║╨░ ╨┐╨╛ slug | Bearer · launcher.catalog |
-| `GET` | `/api/v1/launcher/builds/{slug}/icon` | ╨Ш╨║╨╛╨╜╨║╨░ ╤Б╨▒╨╛╤А╨║╨╕ | Bearer · launcher.catalog |
-| `GET` | `/api/v1/launcher/builds/{slug}/latest/manifest` | ╨Ь╨░╨╜╨╕╤Д╨╡╤Б╤В ╨┐╨╛╤Б╨╗╨╡╨┤╨╜╨╡╨│╨╛ ╤А╨╡╨╗╨╕╨╖╨░ | Bearer · launcher.catalog |
-| `GET` | `/api/v1/launcher/builds/{slug}/releases` | ╨а╨╡╨╗╨╕╨╖╤Л ╤Б╨▒╨╛╤А╨║╨╕ | Bearer · launcher.catalog |
-| `GET` | `/api/v1/launcher/builds/{slug}/releases/{version}/manifest` | ╨Ь╨░╨╜╨╕╤Д╨╡╤Б╤В ╨▓╨╡╤А╤Б╨╕╨╕ | Bearer · launcher.catalog |
-| `GET` | `/api/v1/launcher/catalog` | ╨Ъ╨░╤В╨░╨╗╨╛╨│ ╤Б╨▒╨╛╤А╨╛╨║ | Bearer · launcher.catalog |
+| `GET` | `/api/v1/public/shares/{token}` | Сведения о публичной ссылке | — |
+| `GET` | `/api/v1/public/shares/{token}/download` | Скачать по публичной ссылке | — |
+| `POST` | `/api/v1/public/shares/{token}/unlock` | Проверить пароль и получить тикет скачивания | — |
 
-### Monitoring — ╨Ь╨╡╤В╤А╨╕╨║╨╕ ╨╕ ╨╕╤Б╤В╨╛╤А╨╕╤П
+### Minecraft — Сборки, файлы и релизы
 
 | Метод | Путь | Описание | Доступ |
 |---|---|---|---|
-| `GET` | `/api/v1/monitoring/current` | ╨в╨╡╨║╤Г╤Й╨╕╨╡ ╨╝╨╡╤В╤А╨╕╨║╨╕ | Cookie |
-| `GET` | `/api/v1/monitoring/history` | ╨Ш╤Б╤В╨╛╤А╨╕╤П ╨╝╨╡╤В╤А╨╕╨║ | Cookie |
-| `GET` | `/api/v1/monitoring/intervals` | ╨Ш╨╜╤В╨╡╤А╨▓╨░╨╗╤Л ╨╕╤Б╤В╨╛╤А╨╕╨╕ | Cookie |
-| `GET` | `/api/v1/monitoring/modules` | ╨Ь╨╡╤В╤А╨╕╨║╨╕ ╨╝╨╛╨┤╤Г╨╗╨╡╨╣ | Cookie |
+| `GET` | `/api/v1/minecraft/builds` | Список сборок | Cookie |
+| `POST` | `/api/v1/minecraft/builds` | Создать сборку | Cookie + CSRF |
+| `GET` | `/api/v1/minecraft/builds/{id}` | Сборка с файлами и релизами | Cookie |
+| `PATCH` | `/api/v1/minecraft/builds/{id}` | Изменить сборку | Cookie + CSRF |
+| `DELETE` | `/api/v1/minecraft/builds/{id}` | Удалить сборку | Cookie + CSRF |
+| `POST` | `/api/v1/minecraft/builds/{id}/archive` | Архивировать сборку | Cookie + CSRF |
+| `POST` | `/api/v1/minecraft/builds/{id}/clone` | Клонировать сборку | Cookie + CSRF |
+| `GET` | `/api/v1/minecraft/builds/{id}/files` | Файлы сборки | Cookie |
+| `DELETE` | `/api/v1/minecraft/builds/{id}/files` | Удалить все файлы | Cookie + CSRF |
+| `PATCH` | `/api/v1/minecraft/builds/{id}/files/{file_id}` | Изменить файл | Cookie + CSRF |
+| `DELETE` | `/api/v1/minecraft/builds/{id}/files/{file_id}` | Удалить файл | Cookie + CSRF |
+| `POST` | `/api/v1/minecraft/builds/{id}/files/{file_id}/replace` | Заменить содержимое файла | Cookie + CSRF |
+| `POST` | `/api/v1/minecraft/builds/{id}/files/folder` | Создать папку | Cookie + CSRF |
+| `GET` | `/api/v1/minecraft/builds/{id}/history` | История изменений | Cookie |
+| `GET` | `/api/v1/minecraft/builds/{id}/icon` | Иконка сборки | Cookie |
+| `PUT` | `/api/v1/minecraft/builds/{id}/icon` | Загрузить иконку | Cookie + CSRF |
+| `DELETE` | `/api/v1/minecraft/builds/{id}/icon` | Удалить иконку | Cookie + CSRF |
+| `GET` | `/api/v1/minecraft/builds/{id}/releases` | Релизы сборки | Cookie |
+| `POST` | `/api/v1/minecraft/builds/{id}/releases` | Создать релиз | Cookie + CSRF |
+| `GET` | `/api/v1/minecraft/builds/{id}/releases/{release_id}` | Релиз | Cookie |
+| `POST` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/activate` | Сделать релиз текущим | Cookie + CSRF |
+| `POST` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/archive` | Архивировать релиз | Cookie + CSRF |
+| `POST` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/deprecate` | Пометить релиз устаревшим | Cookie + CSRF |
+| `GET` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/launcher-manifest` | Манифест MyLauncher для релиза | Cookie |
+| `GET` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/manifest` | Манифест релиза | Cookie |
+| `POST` | `/api/v1/minecraft/builds/{id}/releases/{release_id}/publish` | Опубликовать релиз | Cookie + CSRF |
+| `GET` | `/api/v1/minecraft/builds/{id}/releases/compare` | Сравнить релизы | Cookie |
+| `POST` | `/api/v1/minecraft/builds/{id}/restore` | Восстановить сборку | Cookie + CSRF |
+| `POST` | `/api/v1/minecraft/builds/{id}/unpublish` | Снять сборку с публикации | Cookie + CSRF |
+| `POST` | `/api/v1/minecraft/builds/{id}/validate` | Проверить сборку | Cookie + CSRF |
+| `GET` | `/api/v1/minecraft/metadata/fabric` | Версии Fabric | Cookie |
+| `GET` | `/api/v1/minecraft/metadata/forge` | Версии Forge | Cookie |
+| `GET` | `/api/v1/minecraft/metadata/loaders` | Совместимые версии загрузчика | Cookie |
+| `GET` | `/api/v1/minecraft/metadata/minecraft` | Версии Minecraft | Cookie |
+| `GET` | `/api/v1/minecraft/metadata/neoforge` | Версии NeoForge | Cookie |
+| `GET` | `/api/v1/minecraft/metadata/quilt` | Версии Quilt | Cookie |
+| `GET` | `/api/v1/minecraft/stats` | Сводка по сборкам | Cookie |
+| `POST` | `/api/v1/minecraft/uploads` | Начать загрузку артефакта | Cookie + CSRF |
+| `GET` | `/api/v1/minecraft/uploads/{id}` | Смещение загрузки артефакта | Cookie |
+| `PATCH` | `/api/v1/minecraft/uploads/{id}` | Записать чанк артефакта | Cookie + CSRF |
+| `DELETE` | `/api/v1/minecraft/uploads/{id}` | Отменить загрузку артефакта | Cookie + CSRF |
+| `POST` | `/api/v1/minecraft/uploads/{id}/complete` | Завершить загрузку артефакта (Idempotency-Key) | Cookie + CSRF |
+| `GET` | `/api/v1/minecraft/uploads/config` | Лимиты загрузки артефактов | Cookie |
 
-### Jobs — ╨д╨╛╨╜╨╛╨▓╤Л╨╡ ╨╖╨░╨┤╨░╤З╨╕
-
-| Метод | Путь | Описание | Доступ |
-|---|---|---|---|
-| `GET` | `/api/v1/jobs` | ╨д╨╛╨╜╨╛╨▓╤Л╨╡ ╨╖╨░╨┤╨░╤З╨╕ | Cookie |
-| `GET` | `/api/v1/jobs/{id}` | ╨Ч╨░╨┤╨░╤З╨░ | Cookie |
-| `POST` | `/api/v1/jobs/{id}/cancel` | ╨Ю╤В╨╝╨╡╨╜╨╕╤В╤М ╨╖╨░╨┤╨░╤З╤Г | Cookie + CSRF |
-| `POST` | `/api/v1/jobs/{id}/pause` | ╨Я╤А╨╕╨╛╤Б╤В╨░╨╜╨╛╨▓╨╕╤В╤М ╨╖╨░╨┤╨░╤З╤Г | Cookie + CSRF |
-| `POST` | `/api/v1/jobs/{id}/resume` | ╨Т╨╛╨╖╨╛╨▒╨╜╨╛╨▓╨╕╤В╤М ╨╖╨░╨┤╨░╤З╤Г | Cookie + CSRF |
-| `POST` | `/api/v1/jobs/maintenance` | ╨Ч╨░╨┐╤Г╤Б╤В╨╕╤В╤М ╨╛╨▒╤Б╨╗╤Г╨╢╨╕╨▓╨░╨╜╨╕╨╡ | Cookie + CSRF |
-
-### Realtime — WebSocket-╤Б╨╛╨▒╤Л╤В╨╕╤П
-
-| Метод | Путь | Описание | Доступ |
-|---|---|---|---|
-| `GET` | `/api/v1/ws` | WebSocket-╨║╨░╨╜╨░╨╗ ╨┐╤А╨╛╨│╤А╨╡╤Б╤Б╨░ | Cookie |
-
-### AI — AI Chat, ╨┤╨╕╨░╨╗╨╛╨│╨╕ ╨╕ Agent ╨╖╨░╨┤╨░╤З╨╕
-
-| Метод | Путь | Описание | Доступ |
-|---|---|---|---|
-| `POST` | `/api/v1/ai/approvals/{id}/approve` | ╨Я╨╛╨┤╤В╨▓╨╡╤А╨┤╨╕╤В╤М ╨┤╨╡╨╣╤Б╤В╨▓╨╕╨╡ | Cookie + CSRF |
-| `POST` | `/api/v1/ai/approvals/{id}/reject` | ╨Ю╤В╨║╨╗╨╛╨╜╨╕╤В╤М ╨┤╨╡╨╣╤Б╤В╨▓╨╕╨╡ | Cookie + CSRF |
-| `GET` | `/api/v1/ai/approvals/pending` | ╨Ю╨╢╨╕╨┤╨░╤О╤Й╨╕╨╡ approvals | Cookie |
-| `GET` | `/api/v1/ai/conversations` | ╨б╨┐╨╕╤Б╨╛╨║ ╨┤╨╕╨░╨╗╨╛╨│╨╛╨▓ | Cookie |
-| `POST` | `/api/v1/ai/conversations` | ╨б╨╛╨╖╨┤╨░╤В╤М ╨┤╨╕╨░╨╗╨╛╨│ | Cookie + CSRF |
-| `GET` | `/api/v1/ai/conversations/{id}` | ╨Ь╨╡╤В╨░╨┤╨░╨╜╨╜╤Л╨╡ ╨┤╨╕╨░╨╗╨╛╨│╨░ | Cookie |
-| `PATCH` | `/api/v1/ai/conversations/{id}` | ╨Ш╨╖╨╝╨╡╨╜╨╕╤В╤М ╨┤╨╕╨░╨╗╨╛╨│ | Cookie + CSRF |
-| `DELETE` | `/api/v1/ai/conversations/{id}` | ╨Р╤А╤Е╨╕╨▓╨╕╤А╨╛╨▓╨░╤В╤М ╨┤╨╕╨░╨╗╨╛╨│ | Cookie + CSRF |
-| `POST` | `/api/v1/ai/conversations/{id}/attachments` | ╨Ч╨░╨│╤А╤Г╨╖╨╕╤В╤М ╤В╨╡╨║╤Б╤В╨╛╨▓╨╛╨╡ ╨▓╨╗╨╛╨╢╨╡╨╜╨╕╨╡ | Cookie + CSRF |
-| `GET` | `/api/v1/ai/conversations/{id}/messages` | ╨Ш╤Б╤В╨╛╤А╨╕╤П ╤Б╨╛╨╛╨▒╤Й╨╡╨╜╨╕╨╣ | Cookie |
-| `POST` | `/api/v1/ai/conversations/{id}/messages` | ╨Ю╤В╨┐╤А╨░╨▓╨╕╤В╤М ╤Б╨╛╨╛╨▒╤Й╨╡╨╜╨╕╨╡ | Cookie + CSRF |
-| `PATCH` | `/api/v1/ai/conversations/{id}/messages/{message_id}` | ╨а╨╡╨┤╨░╨║╤В╨╕╤А╨╛╨▓╨░╤В╤М ╤Б╨╛╨╛╨▒╤Й╨╡╨╜╨╕╨╡ ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П | Cookie + CSRF |
-| `POST` | `/api/v1/ai/conversations/{id}/messages/{message_id}/regenerate` | ╨Я╨╛╨▓╤В╨╛╤А╨╜╨░╤П ╨│╨╡╨╜╨╡╤А╨░╤Ж╨╕╤П ╨╛╤В╨▓╨╡╤В╨░ | Cookie + CSRF |
-| `POST` | `/api/v1/ai/conversations/{id}/stop` | ╨Ю╤Б╤В╨░╨╜╨╛╨▓╨╕╤В╤М ╨│╨╡╨╜╨╡╤А╨░╤Ж╨╕╤О | Cookie + CSRF |
-| `GET` | `/api/v1/ai/providers` | ╨Ф╨╛╤Б╤В╤Г╨┐╨╜╤Л╨╡ ╨┐╤А╨╛╨▓╨░╨╣╨┤╨╡╤А╤Л | Cookie |
-| `GET` | `/api/v1/ai/providers/{id}` | ╨Я╤А╨╛╨▓╨░╨╣╨┤╨╡╤А ╨▒╨╡╨╖ ╤Б╨╡╨║╤А╨╡╤В╨╛╨▓ | Cookie |
-| `GET` | `/api/v1/ai/skills` | ╨Э╨░╨╖╨╜╨░╤З╨╡╨╜╨╜╤Л╨╡ Skills | Cookie |
-| `GET` | `/api/v1/ai/skills/{id}` | ╨б╨╛╨┤╨╡╤А╨╢╨╕╨╝╨╛╨╡ ╨╜╨░╨╖╨╜╨░╤З╨╡╨╜╨╜╨╛╨│╨╛ Skill | Cookie |
-| `GET` | `/api/v1/ai/tasks` | ╨Ч╨░╨┤╨░╤З╨╕ ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П | Cookie |
-| `POST` | `/api/v1/ai/tasks` | ╨б╨╛╨╖╨┤╨░╤В╤М Agent Task | Cookie + CSRF |
-| `GET` | `/api/v1/ai/tasks/{id}` | ╨б╨╛╤Б╤В╨╛╤П╨╜╨╕╨╡ ╨╖╨░╨┤╨░╤З╨╕ | Cookie |
-| `POST` | `/api/v1/ai/tasks/{id}/cancel` | ╨Ю╤В╨╝╨╡╨╜╨╕╤В╤М ╨╖╨░╨┤╨░╤З╤Г | Cookie + CSRF |
-| `GET` | `/api/v1/ai/tasks/{id}/events` | ╨б╨╛╨▒╤Л╤В╨╕╤П ╨╖╨░╨┤╨░╤З╨╕ | Cookie |
-| `GET` | `/api/v1/ai/tasks/{id}/executions` | ╨Ш╤Б╤В╨╛╤А╨╕╤П ╨╕╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В╨╛╨▓ | Cookie |
-| `GET` | `/api/v1/ai/tools` | ╨Ъ╨░╤В╨░╨╗╨╛╨│ ╤А╨░╨╖╤А╨╡╤И╤С╨╜╨╜╤Л╤Е ╨╕╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В╨╛╨▓ | Cookie |
-| `GET` | `/api/v1/ai/workspaces` | ╨а╨░╨▒╨╛╤З╨╕╨╡ ╨┐╤А╨╛╤Б╤В╤А╨░╨╜╤Б╤В╨▓╨░ ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П | Cookie |
-| `GET` | `/api/v1/ai/workspaces/{id}` | ╨Ь╨╡╤В╨░╨┤╨░╨╜╨╜╤Л╨╡ workspace | Cookie |
-| `GET` | `/api/v1/ai/workspaces/{id}/usage` | ╨Ш╤Б╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╨╜╨╕╨╡ ╨╕ ╨║╨▓╨╛╤В╤Л | Cookie |
-
-### AI Admin — Runtime, ╨┐╤А╨╛╨▓╨░╨╣╨┤╨╡╤А╤Л, workspace, Skills ╨╕ ╨┐╨╛╨╗╨╕╤В╨╕╨║╨╕
+### Launcher — API для клиента лаунчера
 
 | Метод | Путь | Описание | Доступ |
 |---|---|---|---|
-| `GET` | `/api/v1/ai/admin/enrollment-codes` | ╨Ъ╨╛╨┤╤Л ╤А╨╡╨│╨╕╤Б╤В╤А╨░╤Ж╨╕╨╕ Runtime | Cookie |
-| `POST` | `/api/v1/ai/admin/enrollment-codes` | ╨б╨╛╨╖╨┤╨░╤В╤М ╨╛╨┤╨╜╨╛╤А╨░╨╖╨╛╨▓╤Л╨╣ ╨║╨╛╨┤ Runtime | Cookie + CSRF |
-| `POST` | `/api/v1/ai/admin/enrollment-codes/{id}/revoke` | ╨Ю╤В╨╛╨╖╨▓╨░╤В╤М ╨║╨╛╨┤ ╤А╨╡╨│╨╕╤Б╤В╤А╨░╤Ж╨╕╨╕ | Cookie + CSRF |
-| `GET` | `/api/v1/ai/admin/logs` | AI ╨░╤Г╨┤╨╕╤В ╨╕ Runtime-╨╢╤Г╤А╨╜╨░╨╗ | Cookie |
+| `GET` | `/api/files/{hash}` | Файл сборки MyLauncher | — |
+| `GET` | `/api/packs` | Каталог сборок MyLauncher | — |
+| `GET` | `/api/packs/{pack_id}/icon` | Иконка сборки MyLauncher | — |
+| `GET` | `/api/packs/{pack_id}/versions` | Версии сборки MyLauncher | — |
+| `GET` | `/api/packs/{pack_id}/versions/{version}/manifest` | Манифест MyLauncher | — |
+| `GET` | `/api/v1/admin/launcher/repository` | Параметры репозитория MyLauncher | Cookie |
+| `GET` | `/api/v1/admin/launcher/tokens` | Токены лаунчера | Cookie |
+| `DELETE` | `/api/v1/admin/launcher/tokens/{id}` | Отозвать токен | Cookie + CSRF |
+| `GET` | `/api/v1/launcher/artifacts/{id}` | Скачать артефакт | Bearer · launcher.artifacts |
+| `POST` | `/api/v1/launcher/auth/revoke` | Отозвать свой токен | Bearer |
+| `POST` | `/api/v1/launcher/auth/token` | Выдать токен лаунчера | — |
+| `GET` | `/api/v1/launcher/builds` | Список сборок | Bearer · launcher.catalog |
+| `GET` | `/api/v1/launcher/builds/{slug}` | Сборка по slug | Bearer · launcher.catalog |
+| `GET` | `/api/v1/launcher/builds/{slug}/icon` | Иконка сборки | Bearer · launcher.catalog |
+| `GET` | `/api/v1/launcher/builds/{slug}/latest/manifest` | Манифест последнего релиза | Bearer · launcher.catalog |
+| `GET` | `/api/v1/launcher/builds/{slug}/releases` | Релизы сборки | Bearer · launcher.catalog |
+| `GET` | `/api/v1/launcher/builds/{slug}/releases/{version}/manifest` | Манифест версии | Bearer · launcher.catalog |
+| `GET` | `/api/v1/launcher/catalog` | Каталог сборок | Bearer · launcher.catalog |
+
+### Monitoring — Метрики и история
+
+| Метод | Путь | Описание | Доступ |
+|---|---|---|---|
+| `GET` | `/api/v1/monitoring/current` | Текущие метрики | Cookie |
+| `GET` | `/api/v1/monitoring/history` | История метрик | Cookie |
+| `GET` | `/api/v1/monitoring/intervals` | Интервалы истории | Cookie |
+| `GET` | `/api/v1/monitoring/modules` | Метрики модулей | Cookie |
+
+### Jobs — Фоновые задачи
+
+| Метод | Путь | Описание | Доступ |
+|---|---|---|---|
+| `GET` | `/api/v1/jobs` | Фоновые задачи | Cookie |
+| `GET` | `/api/v1/jobs/{id}` | Задача | Cookie |
+| `POST` | `/api/v1/jobs/{id}/cancel` | Отменить задачу | Cookie + CSRF |
+| `POST` | `/api/v1/jobs/{id}/pause` | Приостановить задачу | Cookie + CSRF |
+| `POST` | `/api/v1/jobs/{id}/resume` | Возобновить задачу | Cookie + CSRF |
+| `POST` | `/api/v1/jobs/maintenance` | Запустить обслуживание | Cookie + CSRF |
+
+### Realtime — WebSocket-события
+
+| Метод | Путь | Описание | Доступ |
+|---|---|---|---|
+| `GET` | `/api/v1/ws` | WebSocket-канал прогресса | Cookie |
+
+### AI — AI Chat, диалоги и Agent задачи
+
+| Метод | Путь | Описание | Доступ |
+|---|---|---|---|
+| `POST` | `/api/v1/ai/approvals/{id}/approve` | Подтвердить действие | Cookie + CSRF |
+| `POST` | `/api/v1/ai/approvals/{id}/reject` | Отклонить действие | Cookie + CSRF |
+| `GET` | `/api/v1/ai/approvals/pending` | Ожидающие approvals | Cookie |
+| `GET` | `/api/v1/ai/conversations` | Список диалогов | Cookie |
+| `POST` | `/api/v1/ai/conversations` | Создать диалог | Cookie + CSRF |
+| `GET` | `/api/v1/ai/conversations/{id}` | Метаданные диалога | Cookie |
+| `PATCH` | `/api/v1/ai/conversations/{id}` | Изменить диалог | Cookie + CSRF |
+| `DELETE` | `/api/v1/ai/conversations/{id}` | Архивировать диалог | Cookie + CSRF |
+| `POST` | `/api/v1/ai/conversations/{id}/attachments` | Загрузить текстовое вложение | Cookie + CSRF |
+| `GET` | `/api/v1/ai/conversations/{id}/messages` | История сообщений | Cookie |
+| `POST` | `/api/v1/ai/conversations/{id}/messages` | Отправить сообщение | Cookie + CSRF |
+| `PATCH` | `/api/v1/ai/conversations/{id}/messages/{message_id}` | Редактировать сообщение пользователя | Cookie + CSRF |
+| `POST` | `/api/v1/ai/conversations/{id}/messages/{message_id}/regenerate` | Повторная генерация ответа | Cookie + CSRF |
+| `POST` | `/api/v1/ai/conversations/{id}/stop` | Остановить генерацию | Cookie + CSRF |
+| `GET` | `/api/v1/ai/providers` | Доступные провайдеры | Cookie |
+| `GET` | `/api/v1/ai/providers/{id}` | Провайдер без секретов | Cookie |
+| `GET` | `/api/v1/ai/skills` | Назначенные Skills | Cookie |
+| `GET` | `/api/v1/ai/skills/{id}` | Содержимое назначенного Skill | Cookie |
+| `GET` | `/api/v1/ai/tasks` | Задачи пользователя | Cookie |
+| `POST` | `/api/v1/ai/tasks` | Создать Agent Task | Cookie + CSRF |
+| `GET` | `/api/v1/ai/tasks/{id}` | Состояние задачи | Cookie |
+| `POST` | `/api/v1/ai/tasks/{id}/cancel` | Отменить задачу | Cookie + CSRF |
+| `GET` | `/api/v1/ai/tasks/{id}/events` | События задачи | Cookie |
+| `GET` | `/api/v1/ai/tasks/{id}/executions` | История инструментов | Cookie |
+| `GET` | `/api/v1/ai/tools` | Каталог разрешённых инструментов | Cookie |
+| `GET` | `/api/v1/ai/workspaces` | Рабочие пространства пользователя | Cookie |
+| `GET` | `/api/v1/ai/workspaces/{id}` | Метаданные workspace | Cookie |
+| `GET` | `/api/v1/ai/workspaces/{id}/usage` | Использование и квоты | Cookie |
+| `POST` | `/api/v1/ai/workspaces/{id}/usage/refresh` | Запросить актуальный usage workspace у Runtime | Cookie + CSRF |
+
+### AI Admin — Runtime, провайдеры, workspace, Skills и политики
+
+| Метод | Путь | Описание | Доступ |
+|---|---|---|---|
+| `GET` | `/api/v1/ai/admin/enrollment-codes` | Коды регистрации Runtime | Cookie |
+| `POST` | `/api/v1/ai/admin/enrollment-codes` | Создать одноразовый код Runtime | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/enrollment-codes/{id}/revoke` | Отозвать код регистрации | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/logs` | AI аудит и Runtime-журнал | Cookie |
+| `GET` | `/api/v1/ai/admin/mcp-connections` | Список MCP-соединений | Cookie |
+| `POST` | `/api/v1/ai/admin/mcp-connections` | Создать MCP-соединение | Cookie + CSRF |
+| `PATCH` | `/api/v1/ai/admin/mcp-connections/{id}` | Изменить MCP-соединение | Cookie + CSRF |
+| `DELETE` | `/api/v1/ai/admin/mcp-connections/{id}` | Удалить MCP-соединение | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/mcp-connections/{id}/assignments` | Назначения MCP-соединения | Cookie |
+| `POST` | `/api/v1/ai/admin/mcp-connections/{id}/assignments` | Назначить MCP-соединение | Cookie + CSRF |
+| `DELETE` | `/api/v1/ai/admin/mcp-connections/{id}/assignments/{assignment_id}` | Удалить назначение MCP | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/mcp-connections/{id}/discover` | Discovery MCP tools через Runtime | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/mcp-connections/{id}/tools` | Обнаруженные MCP tools | Cookie |
+| `PATCH` | `/api/v1/ai/admin/mcp-tools/{id}` | Изменить политику MCP tool | Cookie + CSRF |
 | `GET` | `/api/v1/ai/admin/overview` | AI Overview | Cookie |
-| `GET` | `/api/v1/ai/admin/programs` | ╨Ч╨░╤А╨╡╨│╨╕╤Б╤В╤А╨╕╤А╨╛╨▓╨░╨╜╨╜╤Л╨╡ ╨┐╤А╨╛╨│╤А╨░╨╝╨╝╤Л | Cookie |
-| `PATCH` | `/api/v1/ai/admin/programs/{id}` | ╨Ш╨╖╨╝╨╡╨╜╨╕╤В╤М ╨┐╤А╨╛╨│╤А╨░╨╝╨╝╤Г | Cookie + CSRF |
-| `POST` | `/api/v1/ai/admin/providers` | ╨б╨╛╨╖╨┤╨░╤В╤М ╨┐╤А╨╛╨▓╨░╨╣╨┤╨╡╤А╨░ | Cookie + CSRF |
-| `PATCH` | `/api/v1/ai/admin/providers/{id}` | ╨Ш╨╖╨╝╨╡╨╜╨╕╤В╤М ╨┐╤А╨╛╨▓╨░╨╣╨┤╨╡╤А╨░ | Cookie + CSRF |
-| `DELETE` | `/api/v1/ai/admin/providers/{id}` | ╨Ю╤В╨║╨╗╤О╤З╨╕╤В╤М ╨┐╤А╨╛╨▓╨░╨╣╨┤╨╡╤А╨░ | Cookie + CSRF |
-| `GET` | `/api/v1/ai/admin/providers/{id}/models` | ╨Ю╨▒╨╜╨╛╨▓╨╕╤В╤М ╤Б╨┐╨╕╤Б╨╛╨║ ╨╝╨╛╨┤╨╡╨╗╨╡╨╣ | Cookie |
-| `GET` | `/api/v1/ai/admin/providers/{id}/status` | ╨б╤В╨░╤В╤Г╤Б ╨┐╤А╨╛╨▓╨░╨╣╨┤╨╡╤А╨░ | Cookie |
-| `POST` | `/api/v1/ai/admin/providers/{id}/test` | ╨Я╤А╨╛╨▓╨╡╤А╨╕╤В╤М PolyStrata ╤З╨╡╤А╨╡╨╖ Runtime | Cookie + CSRF |
-| `GET` | `/api/v1/ai/admin/quotas` | AI-╨║╨▓╨╛╤В╤Л ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╨╡╨╣ | Cookie |
-| `PUT` | `/api/v1/ai/admin/quotas/{user_id}` | ╨г╤Б╤В╨░╨╜╨╛╨▓╨╕╤В╤М AI-╨║╨▓╨╛╤В╤Г | Cookie + CSRF |
-| `GET` | `/api/v1/ai/admin/runtime-nodes` | ╨б╨┐╨╕╤Б╨╛╨║ Runtime | Cookie |
-| `GET` | `/api/v1/ai/admin/runtime-nodes/{id}` | ╨Ф╨╡╤В╨░╨╗╨╕ Runtime | Cookie |
-| `POST` | `/api/v1/ai/admin/runtime-nodes/{id}/disable` | ╨Ю╤В╨║╨╗╤О╤З╨╕╤В╤М Runtime | Cookie + CSRF |
-| `POST` | `/api/v1/ai/admin/runtime-nodes/{id}/enable` | ╨Т╨║╨╗╤О╤З╨╕╤В╤М Runtime | Cookie + CSRF |
-| `POST` | `/api/v1/ai/admin/runtime-nodes/{id}/revoke` | ╨Ю╤В╨╛╨╖╨▓╨░╤В╤М Runtime | Cookie + CSRF |
-| `POST` | `/api/v1/ai/admin/runtime-nodes/{id}/rotate-token` | ╨а╨╛╤В╨╕╤А╨╛╨▓╨░╤В╤М device token | Cookie + CSRF |
-| `GET` | `/api/v1/ai/admin/skills` | ╨Т╤Б╨╡ Skills | Cookie |
-| `PATCH` | `/api/v1/ai/admin/skills/{id}` | ╨Ш╨╖╨╝╨╡╨╜╨╕╤В╤М Skill | Cookie + CSRF |
-| `DELETE` | `/api/v1/ai/admin/skills/{id}` | ╨г╨┤╨░╨╗╨╕╤В╤М Skill | Cookie + CSRF |
-| `GET` | `/api/v1/ai/admin/skills/{id}/assignments` | ╨Э╨░╨╖╨╜╨░╤З╨╡╨╜╨╕╤П Skill | Cookie |
-| `POST` | `/api/v1/ai/admin/skills/{id}/assignments` | ╨Э╨░╨╖╨╜╨░╤З╨╕╤В╤М Skill | Cookie + CSRF |
-| `DELETE` | `/api/v1/ai/admin/skills/{id}/assignments/{assignment_id}` | ╨г╨┤╨░╨╗╨╕╤В╤М ╨╜╨░╨╖╨╜╨░╤З╨╡╨╜╨╕╨╡ Skill | Cookie + CSRF |
-| `POST` | `/api/v1/ai/admin/skills/{id}/disable` | ╨Ю╤В╨║╨╗╤О╤З╨╕╤В╤М Skill | Cookie + CSRF |
-| `POST` | `/api/v1/ai/admin/skills/{id}/enable` | ╨Т╨║╨╗╤О╤З╨╕╤В╤М Skill | Cookie + CSRF |
-| `POST` | `/api/v1/ai/admin/skills/import` | ╨Ш╨╝╨┐╨╛╤А╤В ZIP Skill | Cookie + CSRF |
-| `GET` | `/api/v1/ai/admin/tools` | Tool Registry ╨╕ ╨┐╨╛╨╗╨╕╤В╨╕╨║╨╕ | Cookie |
-| `PATCH` | `/api/v1/ai/admin/tools/{id}` | ╨Ш╨╖╨╝╨╡╨╜╨╕╤В╤М ╨┐╨╛╨╗╨╕╤В╨╕╨║╤Г ╨╕╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В╨░ | Cookie + CSRF |
-| `GET` | `/api/v1/ai/admin/workspaces` | ╨Т╤Б╨╡ workspace | Cookie |
-| `POST` | `/api/v1/ai/admin/workspaces` | ╨б╨╛╨╖╨┤╨░╤В╤М workspace | Cookie + CSRF |
-| `PATCH` | `/api/v1/ai/admin/workspaces/{id}` | ╨Ш╨╖╨╝╨╡╨╜╨╕╤В╤М workspace | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/programs` | Зарегистрированные программы | Cookie |
+| `PATCH` | `/api/v1/ai/admin/programs/{id}` | Изменить программу | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/providers` | Все провайдеры, включая отключённые | Cookie |
+| `POST` | `/api/v1/ai/admin/providers` | Создать провайдера | Cookie + CSRF |
+| `PATCH` | `/api/v1/ai/admin/providers/{id}` | Изменить провайдера | Cookie + CSRF |
+| `DELETE` | `/api/v1/ai/admin/providers/{id}` | Отключить провайдера | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/providers/{id}/models` | Обновить список моделей | Cookie |
+| `GET` | `/api/v1/ai/admin/providers/{id}/status` | Статус провайдера | Cookie |
+| `POST` | `/api/v1/ai/admin/providers/{id}/test` | Проверить PolyStrata через Runtime | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/quotas` | AI-квоты пользователей | Cookie |
+| `PUT` | `/api/v1/ai/admin/quotas/{user_id}` | Установить AI-квоту | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/runtime-nodes` | Список Runtime | Cookie |
+| `GET` | `/api/v1/ai/admin/runtime-nodes/{id}` | Детали Runtime | Cookie |
+| `POST` | `/api/v1/ai/admin/runtime-nodes/{id}/disable` | Отключить Runtime | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/runtime-nodes/{id}/enable` | Включить Runtime | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/runtime-nodes/{id}/revoke` | Отозвать Runtime | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/runtime-nodes/{id}/rotate-token` | Ротировать device token | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/skills` | Все Skills | Cookie |
+| `PATCH` | `/api/v1/ai/admin/skills/{id}` | Изменить Skill | Cookie + CSRF |
+| `DELETE` | `/api/v1/ai/admin/skills/{id}` | Удалить Skill | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/skills/{id}/assignments` | Назначения Skill | Cookie |
+| `POST` | `/api/v1/ai/admin/skills/{id}/assignments` | Назначить Skill | Cookie + CSRF |
+| `DELETE` | `/api/v1/ai/admin/skills/{id}/assignments/{assignment_id}` | Удалить назначение Skill | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/skills/{id}/disable` | Отключить Skill | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/skills/{id}/enable` | Включить Skill | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/skills/{id}/versions` | История версий Skill | Cookie |
+| `GET` | `/api/v1/ai/admin/skills/{id}/versions/{version}` | Полный snapshot файлов версии Skill | Cookie |
+| `POST` | `/api/v1/ai/admin/skills/{id}/versions/{version}/restore` | Восстановить версию Skill как новую | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/skills/import` | Импорт ZIP Skill | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/tools` | Tool Registry и политики | Cookie |
+| `PATCH` | `/api/v1/ai/admin/tools/{id}` | Изменить политику инструмента | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/workspaces` | Все workspace | Cookie |
+| `POST` | `/api/v1/ai/admin/workspaces` | Создать workspace | Cookie + CSRF |
+| `PATCH` | `/api/v1/ai/admin/workspaces/{id}` | Изменить workspace | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/workspaces/{id}/usage/refresh` | Принудительно обновить usage workspace | Cookie + CSRF |
 
-### AI Runtime — ╨а╨╡╨│╨╕╤Б╤В╤А╨░╤Ж╨╕╤П ╨╕ ╨╕╤Б╤Е╨╛╨┤╤П╤Й╨╕╨╣ ╨║╨░╨╜╨░╨╗ NEXUS AI Runtime
+### AI Runtime — Регистрация и исходящий канал NEXUS AI Runtime
 
 | Метод | Путь | Описание | Доступ |
 |---|---|---|---|
-| `GET` | `/api/v1/ai/runtime/connect` | ╨Ш╤Б╤Е╨╛╨┤╤П╤Й╨╕╨╣ WebSocket Runtime (Bearer device token) | Bearer |
-| `POST` | `/api/v1/ai/runtime/enroll` | ╨а╨╡╨│╨╕╤Б╤В╤А╨░╤Ж╨╕╤П Runtime ╨┐╨╛ ╨╛╨┤╨╜╨╛╤А╨░╨╖╨╛╨▓╨╛╨╝╤Г ╨║╨╛╨┤╤Г | — |
+| `GET` | `/api/v1/ai/runtime/connect` | Исходящий WebSocket Runtime (Bearer device token) | Bearer |
+| `POST` | `/api/v1/ai/runtime/enroll` | Регистрация Runtime по одноразовому коду | — |
 <!-- END GENERATED ENDPOINTS -->
 
 ---

@@ -395,6 +395,39 @@ pub fn search(
     }))
 }
 
+pub fn directory_usage(root: &Path, max_entries: usize) -> Result<(u64, u64)> {
+    let mut bytes = 0u64;
+    let mut files = 0u64;
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited = 0usize;
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .with_context(|| format!("не удалось прочитать {}", dir.display()))?;
+        for entry in entries {
+            let entry = entry?;
+            if visited >= max_entries {
+                bail!("превышен лимит обхода workspace при проверке квоты");
+            }
+            visited += 1;
+            let path = entry.path();
+            if is_reparse_point(&path).unwrap_or(true) {
+                continue;
+            }
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            if metadata.is_dir() {
+                stack.push(path);
+            } else if metadata.is_file() {
+                bytes += metadata.len();
+                files += 1;
+            }
+        }
+    }
+    Ok((bytes, files))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -8,6 +8,7 @@ import {
   Cpu,
   FileArchive,
   KeyRound,
+  Network,
   PlugZap,
   RefreshCw,
   Server,
@@ -17,6 +18,8 @@ import {
   Users,
   Wrench,
 } from 'lucide-react';
+
+import { useSession } from '../stores/auth';
 
 import {
   Alert,
@@ -36,6 +39,7 @@ import { formatBytes, formatDate, formatNumber } from '../lib/format';
 import { aiApi, api, errorMessage } from '../services/api';
 import type {
   AiAssignment,
+  AiMcpConnection,
   AiOverview,
   AiProgram,
   AiProvider,
@@ -53,6 +57,7 @@ const TABS = [
   { id: 'workspaces', label: 'Workspaces', icon: <Cpu aria-hidden="true" /> },
   { id: 'skills', label: 'Skills', icon: <FileArchive aria-hidden="true" /> },
   { id: 'tools', label: 'Tools & Programs', icon: <Wrench aria-hidden="true" /> },
+  { id: 'mcp', label: 'MCP', icon: <Network aria-hidden="true" /> },
   { id: 'quotas', label: 'Quotas', icon: <Users aria-hidden="true" /> },
   { id: 'logs', label: 'Security & Logs', icon: <ShieldAlert aria-hidden="true" /> },
 ] as const;
@@ -100,6 +105,20 @@ export function AiAdminPage() {
   const [rotatedToken, setRotatedToken] = useState<string | null>(null);
   const [assignmentSkill, setAssignmentSkill] = useState<AiSkill | null>(null);
   const [logSearch, setLogSearch] = useState('');
+  const [mcpForm, setMcpForm] = useState<{
+    name: string;
+    endpoint: string;
+    runtimeNodeId: string;
+    secret: string;
+    allowPrivateNetwork: boolean;
+    enabled: boolean;
+  } | null>(null);
+  const [mcpToolsFor, setMcpToolsFor] = useState<string | null>(null);
+  const [mcpDelete, setMcpDelete] = useState<AiMcpConnection | null>(null);
+  const [mcpAssignConnection, setMcpAssignConnection] = useState('');
+  const [mcpAssignWorkspace, setMcpAssignWorkspace] = useState('');
+  const session = useSession();
+  const adminUserId = session?.user.id ?? '';
   const [toolEdit, setToolEdit] = useState<AiToolInfo | null>(null);
   const [quotaEdit, setQuotaEdit] = useState<Record<string, unknown> | null>(null);
   const [quotaUserId, setQuotaUserId] = useState<string>('');
@@ -112,7 +131,7 @@ export function AiAdminPage() {
   });
   const providers = useQuery({
     queryKey: ['ai-admin-providers'],
-    queryFn: () => aiApi.providers(),
+    queryFn: () => aiApi.adminProviders(),
     enabled: tab === 'providers' || tab === 'workspaces',
   });
   const nodes = useQuery({
@@ -140,7 +159,7 @@ export function AiAdminPage() {
   const workspaces = useQuery({
     queryKey: ['ai-admin-workspaces'],
     queryFn: aiApi.allWorkspaces,
-    enabled: tab === 'workspaces' || tab === 'skills',
+    enabled: tab === 'workspaces' || tab === 'skills' || tab === 'mcp',
   });
   const skills = useQuery({
     queryKey: ['ai-admin-skills'],
@@ -177,6 +196,17 @@ export function AiAdminPage() {
     queryFn: () => aiApi.adminLogs({ search: logSearch, perPage: 50 }),
     enabled: tab === 'logs',
     refetchInterval: 20_000,
+  });
+  const mcpConnections = useQuery({
+    queryKey: ['ai-admin-mcp'],
+    queryFn: aiApi.mcpConnections,
+    enabled: tab === 'mcp',
+    refetchInterval: tab === 'mcp' ? 15_000 : false,
+  });
+  const mcpTools = useQuery({
+    queryKey: ['ai-admin-mcp-tools', mcpToolsFor],
+    queryFn: () => aiApi.mcpTools(mcpToolsFor!),
+    enabled: !!mcpToolsFor,
   });
 
   const refreshAll = async (): Promise<void> => {
@@ -236,6 +266,77 @@ export function AiAdminPage() {
       await queryClient.invalidateQueries({ queryKey: ['ai-admin-providers'] });
       await queryClient.invalidateQueries({ queryKey: ['ai-providers'] });
       toast('Провайдер отключён', 'success');
+    },
+    onError: (error) => toast(errorMessage(error), 'error'),
+  });
+
+  const saveMcp = useMutation({
+    mutationFn: async (form: NonNullable<typeof mcpForm>) => {
+      const body: Record<string, unknown> = {
+        name: form.name,
+        endpoint: form.endpoint,
+        runtimeNodeId: form.runtimeNodeId,
+        allowPrivateNetwork: form.allowPrivateNetwork,
+        enabled: form.enabled,
+      };
+      if (form.secret.trim()) body.secret = form.secret.trim();
+      return aiApi.createMcpConnection(body);
+    },
+    onSuccess: async () => {
+      setMcpForm(null);
+      await queryClient.invalidateQueries({ queryKey: ['ai-admin-mcp'] });
+      toast('MCP-соединение создано', 'success');
+    },
+    onError: (error) => toast(errorMessage(error), 'error'),
+  });
+
+  const discoverMcp = useMutation({
+    mutationFn: (id: string) => aiApi.discoverMcp(id),
+    onSuccess: async (result) => {
+      toast(`MCP discovery: найдено tools — ${result.tools.length}`, 'success');
+      await queryClient.invalidateQueries({ queryKey: ['ai-admin-mcp'] });
+      await queryClient.invalidateQueries({ queryKey: ['ai-admin-mcp-tools'] });
+    },
+    onError: (error) => toast(errorMessage(error), 'error'),
+  });
+
+  const toggleMcp = useMutation({
+    mutationFn: (connection: AiMcpConnection) =>
+      aiApi.updateMcpConnection(connection.id, {
+        name: connection.name,
+        endpoint: connection.endpoint,
+        runtimeNodeId: connection.runtimeNodeId,
+        allowPrivateNetwork: connection.allowPrivateNetwork,
+        enabled: !connection.enabled,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['ai-admin-mcp'] });
+    },
+    onError: (error) => toast(errorMessage(error), 'error'),
+  });
+
+  const deleteMcp = useMutation({
+    mutationFn: (id: string) => aiApi.deleteMcpConnection(id),
+    onSuccess: async () => {
+      setMcpDelete(null);
+      await queryClient.invalidateQueries({ queryKey: ['ai-admin-mcp'] });
+      toast('MCP-соединение удалено', 'success');
+    },
+    onError: (error) => toast(errorMessage(error), 'error'),
+  });
+
+  const assignMcpMut = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Record<string, unknown> }) =>
+      aiApi.assignMcp(id, body),
+    onSuccess: () => toast('MCP-соединение назначено', 'success'),
+    onError: (error) => toast(errorMessage(error), 'error'),
+  });
+
+  const refreshUsage = useMutation({
+    mutationFn: (id: string) => aiApi.refreshWorkspaceUsage(id),
+    onSuccess: async () => {
+      toast('Usage обновлён по данным Runtime', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['ai-admin-workspaces'] });
     },
     onError: (error) => toast(errorMessage(error), 'error'),
   });
@@ -792,6 +893,15 @@ export function AiAdminPage() {
                 <Button
                   size="sm"
                   variant="ghost"
+                  icon={<RefreshCw aria-hidden="true" />}
+                  disabled={refreshUsage.isPending}
+                  onClick={() => refreshUsage.mutate(workspace.id)}
+                >
+                  Обновить usage
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
                   onClick={() =>
                     setWorkspaceForm({
                       id: workspace.id,
@@ -968,6 +1078,275 @@ export function AiAdminPage() {
               </div>
             ))}
           </div>
+        </div>
+      ) : null}
+
+      {tab === 'mcp' ? (
+        <div className="stack">
+          <SectionTitle title="MCP Connections" meta="выключены по умолчанию · SSRF-проверка" />
+          <Alert tone="info">
+            MCP-сервер должен быть явно зарегистрирован и назначен. Loopback/private адреса
+            требуют отдельного разрешения. Найденные tools проходят те же approval-правила, что и
+            остальные инструменты.
+          </Alert>
+          <div className="card stack">
+            <div className="row wrap">
+              <Field label="Имя">
+                <input
+                  value={mcpForm?.name ?? ''}
+                  onChange={(event) =>
+                    setMcpForm({
+                      name: event.target.value,
+                      endpoint: mcpForm?.endpoint ?? '',
+                      runtimeNodeId: mcpForm?.runtimeNodeId ?? '',
+                      secret: mcpForm?.secret ?? '',
+                      allowPrivateNetwork: mcpForm?.allowPrivateNetwork ?? false,
+                      enabled: mcpForm?.enabled ?? false,
+                    })
+                  }
+                  placeholder="local-tools"
+                />
+              </Field>
+              <Field label="Endpoint">
+                <input
+                  value={mcpForm?.endpoint ?? ''}
+                  onChange={(event) =>
+                    setMcpForm({
+                      name: mcpForm?.name ?? '',
+                      endpoint: event.target.value,
+                      runtimeNodeId: mcpForm?.runtimeNodeId ?? '',
+                      secret: mcpForm?.secret ?? '',
+                      allowPrivateNetwork: mcpForm?.allowPrivateNetwork ?? false,
+                      enabled: mcpForm?.enabled ?? false,
+                    })
+                  }
+                  placeholder="https://host/mcp"
+                />
+              </Field>
+              <Field label="Runtime">
+                <select
+                  value={mcpForm?.runtimeNodeId ?? ''}
+                  onChange={(event) =>
+                    setMcpForm({
+                      name: mcpForm?.name ?? '',
+                      endpoint: mcpForm?.endpoint ?? '',
+                      runtimeNodeId: event.target.value,
+                      secret: mcpForm?.secret ?? '',
+                      allowPrivateNetwork: mcpForm?.allowPrivateNetwork ?? false,
+                      enabled: mcpForm?.enabled ?? false,
+                    })
+                  }
+                >
+                  <option value="">—</option>
+                  {nodes.data?.items.map((node) => (
+                    <option key={node.id} value={node.id}>
+                      {node.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Bearer secret (необязательно)">
+                <input
+                  type="password"
+                  value={mcpForm?.secret ?? ''}
+                  onChange={(event) =>
+                    setMcpForm({
+                      name: mcpForm?.name ?? '',
+                      endpoint: mcpForm?.endpoint ?? '',
+                      runtimeNodeId: mcpForm?.runtimeNodeId ?? '',
+                      secret: event.target.value,
+                      allowPrivateNetwork: mcpForm?.allowPrivateNetwork ?? false,
+                      enabled: mcpForm?.enabled ?? false,
+                    })
+                  }
+                />
+              </Field>
+            </div>
+            <div className="row wrap">
+              <Switch
+                checked={mcpForm?.allowPrivateNetwork ?? false}
+                onChange={(value) =>
+                  setMcpForm({
+                    name: mcpForm?.name ?? '',
+                    endpoint: mcpForm?.endpoint ?? '',
+                    runtimeNodeId: mcpForm?.runtimeNodeId ?? '',
+                    secret: mcpForm?.secret ?? '',
+                    allowPrivateNetwork: value,
+                    enabled: mcpForm?.enabled ?? false,
+                  })
+                }
+                label="Разрешить private/loopback"
+              />
+              <Switch
+                checked={mcpForm?.enabled ?? false}
+                onChange={(value) =>
+                  setMcpForm({
+                    name: mcpForm?.name ?? '',
+                    endpoint: mcpForm?.endpoint ?? '',
+                    runtimeNodeId: mcpForm?.runtimeNodeId ?? '',
+                    secret: mcpForm?.secret ?? '',
+                    allowPrivateNetwork: mcpForm?.allowPrivateNetwork ?? false,
+                    enabled: value,
+                  })
+                }
+                label="Включено"
+              />
+              <Button
+                icon={<Network aria-hidden="true" />}
+                disabled={
+                  !mcpForm?.name.trim() ||
+                  !mcpForm?.endpoint.trim() ||
+                  !mcpForm?.runtimeNodeId ||
+                  saveMcp.isPending
+                }
+                onClick={() => mcpForm && saveMcp.mutate(mcpForm)}
+              >
+                Добавить
+              </Button>
+            </div>
+          </div>
+          {mcpConnections.isPending ? <LoadingInline label="MCP" /> : null}
+          {mcpConnections.data?.items.length === 0 ? (
+            <EmptyState title="MCP-соединений нет">
+              Добавьте сервер и выполните discovery.
+            </EmptyState>
+          ) : null}
+          <div className="ai-admin-table card">
+            {mcpConnections.data?.items.map((connection) => (
+              <div key={connection.id} className="ai-admin-row">
+                <span className="grow">
+                  <strong>{connection.name}</strong>
+                  <span className="tiny muted"> · {connection.endpoint}</span>
+                  <span className="tiny muted"> · tools: {connection.discoveredCount}</span>
+                </span>
+                <Badge tone={connection.enabled ? 'ok' : 'default'}>
+                  {connection.enabled ? 'enabled' : 'disabled'}
+                </Badge>
+                <Badge tone={connection.status === 'error' ? 'danger' : 'default'}>
+                  {connection.status}
+                </Badge>
+                {connection.lastError ? (
+                  <span className="tiny muted" title={connection.lastError}>
+                    {connection.lastError}
+                  </span>
+                ) : null}
+                <Switch
+                  checked={connection.enabled}
+                  onChange={() => toggleMcp.mutate(connection)}
+                  label={connection.name}
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<RefreshCw aria-hidden="true" />}
+                  disabled={!connection.enabled || discoverMcp.isPending}
+                  onClick={() => discoverMcp.mutate(connection.id)}
+                >
+                  Discovery
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!adminUserId}
+                  onClick={() =>
+                    assignMcpMut.mutate({
+                      id: connection.id,
+                      body: { scope: 'user', userId: adminUserId },
+                    })
+                  }
+                >
+                  Назначить мне
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setMcpToolsFor(connection.id)}>
+                  Tools
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  icon={<Trash2 aria-hidden="true" />}
+                  onClick={() => setMcpDelete(connection)}
+                >
+                  Удалить
+                </Button>
+              </div>
+            ))}
+          </div>
+          <div className="card stack">
+            <SectionTitle title="Назначение MCP" meta="user / workspace scope" />
+            <div className="row wrap">
+              <Field label="Соединение">
+                <select
+                  value={mcpAssignConnection}
+                  onChange={(event) => setMcpAssignConnection(event.target.value)}
+                >
+                  <option value="">—</option>
+                  {mcpConnections.data?.items.map((connection) => (
+                    <option key={connection.id} value={connection.id}>
+                      {connection.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Workspace">
+                <select
+                  value={mcpAssignWorkspace}
+                  onChange={(event) => setMcpAssignWorkspace(event.target.value)}
+                >
+                  <option value="">—</option>
+                  {workspaces.data?.items.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Button
+                disabled={!mcpAssignConnection || !mcpAssignWorkspace}
+                onClick={() =>
+                  assignMcpMut.mutate({
+                    id: mcpAssignConnection,
+                    body: { scope: 'workspace', workspaceId: mcpAssignWorkspace },
+                  })
+                }
+              >
+                Назначить workspace
+              </Button>
+            </div>
+            <Alert tone="info">
+              Для вызова MCP-tool также добавьте его tool_id в allowedTools workspace.
+            </Alert>
+          </div>
+          {mcpToolsFor ? (
+            <div className="card stack">
+              <SectionTitle title="Discovered MCP tools" meta={mcpToolsFor} />
+              {mcpTools.isPending ? <LoadingInline label="MCP tools" /> : null}
+              <div className="ai-admin-table">
+                {mcpTools.data?.items.map((tool) => (
+                  <div key={tool.id} className="ai-admin-row">
+                    <span className="grow">
+                      <strong>{tool.name}</strong>
+                      <span className="tiny muted"> · {tool.toolId}</span>
+                    </span>
+                    <Badge>{tool.risk}</Badge>
+                    <Badge tone={tool.enabled ? 'ok' : 'default'}>
+                      {tool.enabled ? 'on' : 'off'}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+              {mcpTools.data?.items.length === 0 ? (
+                <Alert tone="info">Tools не обнаружены. Выполните discovery после включения.</Alert>
+              ) : null}
+            </div>
+          ) : null}
+          <ConfirmDialog
+            open={!!mcpDelete}
+            title="Удалить MCP-соединение?"
+            description={`Соединение «${mcpDelete?.name ?? ''}» и его tool snapshots будут удалены.`}
+            confirmLabel="Удалить"
+            onCancel={() => setMcpDelete(null)}
+            onConfirm={() => mcpDelete && deleteMcp.mutate(mcpDelete.id)}
+          />
         </div>
       ) : null}
 

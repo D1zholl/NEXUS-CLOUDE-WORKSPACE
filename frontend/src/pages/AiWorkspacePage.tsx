@@ -96,6 +96,7 @@ export function AiWorkspacePage() {
   const canAgent = useCan('ai.agent.use');
   const canWorkspace = useCan('ai.workspace.read');
   const canAdmin = useCan('ai.admin.manage');
+  const canApprove = useCan('ai.actions.approve');
 
   const [mode, setMode] = useState<Mode>('chat');
   const [providerId, setProviderId] = useState('');
@@ -244,6 +245,22 @@ export function AiWorkspacePage() {
   }, [messageItems.length, activeId, streaming]);
 
   useEffect(() => {
+    const unsubscribe = realtime.onStatus((connected) => {
+      if (!connected) return;
+      // После reconnect WebSocket не является источником истины: перечитываем
+      // сохранённое состояние из PostgreSQL через HTTP API.
+      void queryClient.invalidateQueries({ queryKey: ['ai-conversations'] });
+      void queryClient.invalidateQueries({ queryKey: ['ai-messages'] });
+      void queryClient.invalidateQueries({ queryKey: ['ai-tasks'] });
+      void queryClient.invalidateQueries({ queryKey: ['ai-task'] });
+      void queryClient.invalidateQueries({ queryKey: ['ai-task-events'] });
+      void queryClient.invalidateQueries({ queryKey: ['ai-executions'] });
+      void queryClient.invalidateQueries({ queryKey: ['ai-approvals'] });
+    });
+    return unsubscribe;
+  }, [queryClient]);
+
+  useEffect(() => {
     const unsubscribe = realtime.subscribe((event) => {
       const payload = event.payload as Record<string, unknown>;
       if (event.kind === 'ai.message.delta') {
@@ -265,6 +282,11 @@ export function AiWorkspacePage() {
             };
           },
         );
+        return;
+      }
+      if (event.kind === 'ai.message.started') {
+        const conversationId = String(payload.conversationId ?? '');
+        void queryClient.invalidateQueries({ queryKey: ['ai-messages', conversationId] });
         return;
       }
       if (['ai.message.completed', 'ai.message.failed'].includes(event.kind)) {
@@ -307,9 +329,11 @@ export function AiWorkspacePage() {
     if (id) next.set('c', id);
     else next.delete('c');
     setParams(next, { replace: true });
+    // Вложения привязаны к конкретному диалогу; при переключении их нельзя
+    // переносить в другой диалог.
+    setAttachments([]);
     if (!id) {
       setDraft('');
-      setAttachments([]);
     }
   };
 
@@ -716,6 +740,7 @@ export function AiWorkspacePage() {
                     key={approval.id}
                     approval={approval}
                     busy={approveMutation.isPending}
+                    canDecide={canApprove}
                     onDecide={(approve) => approveMutation.mutate({ approval, approve })}
                   />
                 ))}
@@ -1065,10 +1090,12 @@ function MessageBubble({
 function ApprovalCard({
   approval,
   busy,
+  canDecide,
   onDecide,
 }: {
   approval: AiApproval;
   busy: boolean;
+  canDecide: boolean;
   onDecide: (approve: boolean) => void;
 }) {
   return (
@@ -1081,10 +1108,16 @@ function ApprovalCard({
       </div>
       <pre className="ai-approval__args">{JSON.stringify(approval.arguments, null, 2)}</pre>
       <div className="ai-approval__actions">
-        <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDecide(false)}>
+        <Button variant="ghost" size="sm" disabled={busy || !canDecide} onClick={() => onDecide(false)}>
           Отклонить
         </Button>
-        <Button variant="primary" size="sm" loading={busy} onClick={() => onDecide(true)}>
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={!canDecide}
+          loading={busy}
+          onClick={() => onDecide(true)}
+        >
           <Check aria-hidden="true" style={{ width: 14, height: 14, marginRight: 6 }} />
           Подтвердить
         </Button>
@@ -1118,6 +1151,9 @@ function TaskPanel({
         </span>
         <span>tools: {task.toolCallsCount}</span>
         <span>{formatPercent(progress * 100)}</span>
+        {task.cancelStatus && task.cancelStatus !== 'none' ? (
+          <span>cancel: {task.cancelStatus}</span>
+        ) : null}
       </div>
       <div className="meter">
         <span style={{ width: `${progress * 100}%` }} />

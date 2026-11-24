@@ -18,13 +18,16 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::config::{DeviceCredentials, RuntimeConfig};
+use crate::mcp::McpRegistry;
 use crate::process::ProgramRegistry;
 use crate::protocol::{
-    Envelope, PolystrataStatus, ProviderChatCompleted, ProviderRequest, ProviderResponse,
-    RuntimeCapabilities, ToolExecuteRequest, ToolOutcome, kind,
+    Envelope, ExecutionStatusResult, McpConnectionConfig, PolystrataStatus, ProviderChatCompleted,
+    ProviderRequest, ProviderResponse, RuntimeCapabilities, ToolExecuteRequest, ToolOutcome,
+    WorkspaceUsage, kind,
 };
 use crate::provider::ProviderClient;
 use crate::tools::ToolExecutor;
+use crate::{filesystem, network};
 
 #[derive(Clone)]
 pub struct RuntimeContext {
@@ -32,6 +35,7 @@ pub struct RuntimeContext {
     pub credentials: DeviceCredentials,
     provider: Arc<ProviderClient>,
     tools: Arc<ToolExecutor>,
+    mcp: Arc<McpRegistry>,
     roots: Arc<Vec<PathBuf>>,
     outbound: mpsc::UnboundedSender<Envelope>,
     sequence: Arc<AtomicI64>,
@@ -117,6 +121,7 @@ pub async fn run(
 
     let config = Arc::new(config);
     let max_parallel = config.limits.max_parallel_tasks.max(1);
+    let mcp = Arc::new(McpRegistry::new());
     let mut attempt = 0u32;
     loop {
         let (outbound, outbound_rx) = mpsc::unbounded_channel();
@@ -129,6 +134,7 @@ pub async fn run(
                 roots.clone(),
                 ProgramRegistry::new(&config.programs, &config.limits),
             )),
+            mcp: mcp.clone(),
             roots: Arc::new(roots.clone()),
             outbound,
             sequence: Arc::new(AtomicI64::new(0)),
@@ -213,6 +219,7 @@ async fn connect_once(
     tracing::info!(status = %response.status(), "WebSocket Runtime подключён");
 
     let (mut write, mut read) = socket.split();
+    let mut last_incoming_sequence: i64 = 0;
     let writer = tokio::spawn(async move {
         while let Some(envelope) = outbound_rx.recv().await {
             let Ok(text) = serde_json::to_string(&envelope) else {
@@ -345,7 +352,55 @@ async fn connect_once(
                     );
                     continue;
                 }
+                if let Some(sequence) = envelope.sequence {
+                    if sequence <= last_incoming_sequence {
+                        let known = context.active.contains_key(&envelope.message_id)
+                            || context.tool_cache.contains_key(&envelope.message_id)
+                            || context.provider_cache.contains_key(&envelope.message_id);
+                        if known {
+                            // Повторная доставка команды: handle() вернёт
+                            // сохранённый receipt и не выполнит side effect снова.
+                            tracing::warn!(
+                                sequence,
+                                kind = %envelope.kind,
+                                "повторная доставка команды NEXUS: будет возвращён receipt"
+                            );
+                        } else {
+                            tracing::warn!(
+                                sequence,
+                                last = last_incoming_sequence,
+                                kind = %envelope.kind,
+                                "повторная/устаревшая команда NEXUS отклонена"
+                            );
+                            continue;
+                        }
+                    } else {
+                        last_incoming_sequence = sequence;
+                    }
+                }
+                let age = chrono::Utc::now()
+                    .signed_duration_since(envelope.timestamp)
+                    .num_seconds();
+                if !(-15 * 60..=15 * 60).contains(&age) {
+                    tracing::warn!(
+                        age_seconds = age,
+                        kind = %envelope.kind,
+                        "команда NEXUS с недопустимым timestamp отклонена"
+                    );
+                    continue;
+                }
                 let ctx = context.clone();
+                if matches!(
+                    envelope.kind.as_str(),
+                    kind::MCP_CONFIGURE | kind::MCP_DISCOVER
+                ) {
+                    // Конфигурация и discovery MCP должны выполняться строго
+                    // последовательно: discovery не должен обогнать configure.
+                    if let Err(error) = context.handle(envelope).await {
+                        tracing::warn!(%error, "ошибка MCP-команды NEXUS");
+                    }
+                    continue;
+                }
                 tokio::spawn(async move {
                     if let Err(error) = ctx.handle(envelope).await {
                         tracing::warn!(%error, "ошибка обработки команды NEXUS");
@@ -396,6 +451,7 @@ impl RuntimeContext {
             polystrata: PolystrataStatus::default(),
             tools: self.tools.descriptors(),
             programs: self.tools.programs().descriptors(),
+            network_isolation: network::status(),
         }
     }
 
@@ -441,6 +497,7 @@ impl RuntimeContext {
             polystrata: status,
             tools: self.tools.descriptors(),
             programs: self.tools.programs().descriptors(),
+            network_isolation: network::status(),
         }
     }
 
@@ -462,8 +519,62 @@ impl RuntimeContext {
             }
             kind::TASK_CANCEL => {
                 if let Some(task_id) = envelope.task_id {
-                    self.cancel_task(task_id).await;
+                    let cancel_request = envelope
+                        .payload
+                        .get("cancelRequestMessageId")
+                        .and_then(|value| value.as_str())
+                        .and_then(|value| Uuid::parse_str(value).ok())
+                        .or(envelope.correlation_id)
+                        .unwrap_or(envelope.message_id);
+                    self.cancel_task(task_id, cancel_request).await;
                 }
+            }
+            kind::WORKSPACE_USAGE => self.workspace_usage(envelope).await?,
+            kind::EXECUTION_STATUS => self.execution_status(envelope).await?,
+            kind::MCP_CONFIGURE => {
+                let connections: Vec<McpConnectionConfig> = envelope
+                    .payload
+                    .get("connections")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+                    .unwrap_or_default();
+                self.mcp.configure(connections).await;
+                self.send(
+                    kind::MCP_CONFIGURE_ACK,
+                    Some(envelope.message_id),
+                    None,
+                    json!({ "configured": true }),
+                );
+            }
+            kind::MCP_DISCOVER => {
+                let connection_id = envelope
+                    .payload
+                    .get("connectionId")
+                    .and_then(|value| value.as_str())
+                    .and_then(|value| Uuid::parse_str(value).ok());
+                let Some(connection_id) = connection_id else {
+                    self.send(
+                        kind::RUNTIME_ERROR,
+                        Some(envelope.message_id),
+                        None,
+                        json!({
+                            "code": "AI_MCP_INVALID_REQUEST",
+                            "message": "mcp.discover без connectionId"
+                        }),
+                    );
+                    return Ok(());
+                };
+                let context = self.clone();
+                let correlation = envelope.message_id;
+                tokio::spawn(async move {
+                    let result = context.mcp.discover(connection_id).await;
+                    context.send(
+                        kind::MCP_TOOLS,
+                        Some(correlation),
+                        None,
+                        serde_json::to_value(result).unwrap_or(Value::Null),
+                    );
+                });
             }
             kind::TOOL_EXECUTE => self.start_tool(envelope).await?,
             kind::RUNTIME_ERROR => {
@@ -689,7 +800,16 @@ impl RuntimeContext {
         tokio::spawn(async move {
             let permit = context.semaphore.clone().acquire_owned().await;
             let result = match permit {
-                Ok(_permit) => context.tools.execute(&request, &cancel).await,
+                Ok(_permit) => {
+                    if request.tool_id.starts_with("mcp.") {
+                        context
+                            .mcp
+                            .call(&request.tool_id, &request.arguments, &cancel)
+                            .await
+                    } else {
+                        context.tools.execute(&request, &cancel).await
+                    }
+                }
                 Err(_) => Err(anyhow::anyhow!("Runtime остановлен")),
             };
             match result {
@@ -731,10 +851,7 @@ impl RuntimeContext {
         self.active
             .insert(message_id, ActiveTask { task_id, cancel });
         if let Some(task_id) = task_id {
-            self.task_index
-                .entry(task_id)
-                .or_insert_with(Vec::new)
-                .push(message_id);
+            self.task_index.entry(task_id).or_default().push(message_id);
         }
     }
 
@@ -783,26 +900,173 @@ impl RuntimeContext {
         outcome
     }
 
-    async fn cancel_task(&self, task_id: Uuid) {
+    async fn cancel_task(&self, task_id: Uuid, cancel_request_message_id: Uuid) {
         let ids = self
             .task_index
             .get(&task_id)
             .map(|entry| entry.clone())
             .unwrap_or_default();
-        for id in ids {
-            self.cancel_message(id);
+        let total = ids.len();
+        // Ack означает «запрос принят», а не «остановлено».
+        self.send(
+            kind::TASK_CANCEL_ACK,
+            Some(cancel_request_message_id),
+            Some(task_id),
+            json!({
+                "cancelRequestMessageId": cancel_request_message_id,
+                "accepted": true,
+                "activeExecutions": total,
+            }),
+        );
+        for id in &ids {
+            self.cancel_message(*id);
         }
         let context = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            context.send(
-                kind::TASK_CANCELLED,
-                None,
-                Some(task_id),
-                json!({ "taskId": task_id }),
-            );
-            context.task_index.remove(&task_id);
+            // Ждём фактического завершения активных provider/tool задач.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                let remaining = context
+                    .task_index
+                    .get(&task_id)
+                    .map(|entry| entry.len())
+                    .unwrap_or(0);
+                if remaining == 0 || tokio::time::Instant::now() >= deadline {
+                    let confirmed = remaining == 0;
+                    context.send(
+                        kind::TASK_CANCELLED,
+                        Some(cancel_request_message_id),
+                        Some(task_id),
+                        json!({
+                            "taskId": task_id,
+                            "confirmed": confirmed,
+                            "cancelRequestMessageId": cancel_request_message_id,
+                            "activeExecutions": remaining,
+                            "terminatedProcesses": total.saturating_sub(remaining),
+                            "reason": if confirmed {
+                                "Все активные операции остановлены"
+                            } else {
+                                "Часть операций не завершилась за 30 секунд"
+                            },
+                        }),
+                    );
+                    if confirmed {
+                        context.task_index.remove(&task_id);
+                    }
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
         });
+    }
+
+    async fn workspace_usage(&self, envelope: Envelope) -> Result<()> {
+        let Some(correlation) = envelope.correlation_id else {
+            return Ok(());
+        };
+        let workspace_root = envelope
+            .payload
+            .get("workspaceRoot")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let workspace_id = envelope
+            .payload
+            .get("workspaceId")
+            .and_then(|value| value.as_str())
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .unwrap_or(Uuid::nil());
+        let usage = match crate::filesystem::Workspace::new(workspace_root, &self.roots) {
+            Ok(workspace) => {
+                let max_entries = self.config.limits.max_directory_entries.saturating_mul(100);
+                match filesystem::directory_usage(&workspace.root, max_entries) {
+                    Ok((bytes, files)) => WorkspaceUsage {
+                        bytes: bytes as i64,
+                        files: files as i64,
+                        checked_at: Some(chrono::Utc::now()),
+                        error: None,
+                    },
+                    Err(error) => WorkspaceUsage {
+                        bytes: 0,
+                        files: 0,
+                        checked_at: Some(chrono::Utc::now()),
+                        error: Some(sanitize(&error.to_string(), &self.roots)),
+                    },
+                }
+            }
+            Err(error) => WorkspaceUsage {
+                bytes: 0,
+                files: 0,
+                checked_at: Some(chrono::Utc::now()),
+                error: Some(sanitize(&error.to_string(), &self.roots)),
+            },
+        };
+        self.send(
+            kind::WORKSPACE_USAGE_RESULT,
+            Some(correlation),
+            None,
+            json!({
+                "workspaceId": workspace_id,
+                "bytes": usage.bytes,
+                "files": usage.files,
+                "checkedAt": usage.checked_at,
+                "error": usage.error,
+            }),
+        );
+        Ok(())
+    }
+
+    async fn execution_status(&self, envelope: Envelope) -> Result<()> {
+        let Some(correlation) = envelope.correlation_id else {
+            return Ok(());
+        };
+        let execution_message_id = envelope
+            .payload
+            .get("executionMessageId")
+            .and_then(|value| value.as_str())
+            .and_then(|value| Uuid::parse_str(value).ok());
+        let Some(execution_message_id) = execution_message_id else {
+            self.send(
+                kind::RUNTIME_ERROR,
+                Some(envelope.message_id),
+                None,
+                json!({
+                    "code": "AI_EXECUTION_STATUS_INVALID",
+                    "message": "execution.status без executionMessageId"
+                }),
+            );
+            return Ok(());
+        };
+        let result = if let Some(outcome) = self.tool_cache.get(&execution_message_id) {
+            ExecutionStatusResult {
+                message_id: execution_message_id,
+                status: "completed".to_owned(),
+                outcome: Some(outcome.clone()),
+                error: None,
+            }
+        } else if self.active.contains_key(&execution_message_id) {
+            ExecutionStatusResult {
+                message_id: execution_message_id,
+                status: "running".to_owned(),
+                outcome: None,
+                error: None,
+            }
+        } else {
+            ExecutionStatusResult {
+                message_id: execution_message_id,
+                status: "unknown".to_owned(),
+                outcome: None,
+                error: Some(
+                    "Runtime не содержит receipt: результат операции неизвестен".to_owned(),
+                ),
+            }
+        };
+        self.send(
+            kind::EXECUTION_STATUS_RESULT,
+            Some(correlation),
+            envelope.task_id,
+            serde_json::to_value(result).unwrap_or(Value::Null),
+        );
+        Ok(())
     }
 }
 
@@ -1003,6 +1267,7 @@ mod integration_tests {
                 vec![allowed.clone()],
                 ProgramRegistry::new(&config.programs, &config.limits),
             )),
+            mcp: Arc::new(McpRegistry::new()),
             roots: Arc::new(vec![allowed.clone()]),
             outbound,
             sequence: Arc::new(AtomicI64::new(0)),

@@ -33,9 +33,31 @@ struct AppliedFile {
     content: Option<Vec<u8>>,
     additions: usize,
     deletions: usize,
+    old_size: u64,
+    new_size: u64,
 }
 
+/// Квоты workspace для предварительной проверки патча.
+#[derive(Debug, Clone, Copy)]
+pub struct Quota {
+    pub used_bytes: u64,
+    pub used_files: u64,
+    pub quota_bytes: i64,
+    pub max_files: i64,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn apply(workspace: &Workspace, patch: &str, strip: usize, max_bytes: u64) -> Result<Value> {
+    apply_checked(workspace, patch, strip, max_bytes, None)
+}
+
+pub fn apply_checked(
+    workspace: &Workspace,
+    patch: &str,
+    strip: usize,
+    max_bytes: u64,
+    quota: Option<&Quota>,
+) -> Result<Value> {
     if patch.len() > 1024 * 1024 {
         bail!("патч превышает 1 МБ");
     }
@@ -66,6 +88,7 @@ pub fn apply(workspace: &Workspace, patch: &str, strip: usize, max_bytes: u64) -
             .or_else(|| old_relative.clone())
             .ok_or_else(|| anyhow::anyhow!("патч не содержит имени файла"))?;
 
+        let mut old_size = 0u64;
         let old_content = match old_relative.as_deref() {
             Some(relative) if !relative.is_empty() => {
                 let path = workspace.resolve_existing(relative)?;
@@ -73,6 +96,7 @@ pub fn apply(workspace: &Workspace, patch: &str, strip: usize, max_bytes: u64) -
                 if metadata.len() > max_bytes {
                     bail!("файл {relative} больше допустимого размера");
                 }
+                old_size = metadata.len();
                 let (text, _) = read_text(&path, max_bytes as usize)?;
                 split_lines(&text)
             }
@@ -132,6 +156,10 @@ pub fn apply(workspace: &Workspace, patch: &str, strip: usize, max_bytes: u64) -
                 bail!("результат патча для {target_relative} превышает лимит файла");
             }
         }
+        let new_size = content
+            .as_ref()
+            .map(|bytes| bytes.len() as u64)
+            .unwrap_or(0);
         applied.push(AppliedFile {
             path,
             relative: target_relative,
@@ -139,7 +167,38 @@ pub fn apply(workspace: &Workspace, patch: &str, strip: usize, max_bytes: u64) -
             content,
             additions,
             deletions,
+            old_size,
+            new_size,
         });
+    }
+
+    if let Some(quota) = quota {
+        let mut delta_bytes: i64 = 0;
+        let mut delta_files: i64 = 0;
+        for file in &applied {
+            delta_bytes += file.new_size as i64 - file.old_size as i64;
+            if file.action == "create" {
+                delta_files += 1;
+            } else if file.action == "delete" {
+                delta_files -= 1;
+            }
+        }
+        if quota.quota_bytes > 0 && quota.used_bytes as i64 + delta_bytes > quota.quota_bytes {
+            bail!(
+                "патч превышает квоту workspace: {} + {} > {} байт",
+                quota.used_bytes,
+                delta_bytes,
+                quota.quota_bytes
+            );
+        }
+        if quota.max_files > 0 && quota.used_files as i64 + delta_files > quota.max_files {
+            bail!(
+                "патч превышает лимит файлов workspace: {} + {} > {}",
+                quota.used_files,
+                delta_files,
+                quota.max_files
+            );
+        }
     }
 
     // Двухфазная запись: все проверки пройдены, применяем изменения.
@@ -225,9 +284,7 @@ fn parse_patch(patch: &str) -> Result<Vec<FilePatch>> {
                             let kind = next.chars().next().unwrap();
                             hunk_lines.push((kind, next[1..].to_owned()));
                             index += 1;
-                        } else if next.starts_with('\\') {
-                            index += 1;
-                        } else if next.is_empty() {
+                        } else if next.starts_with('\\') || next.is_empty() {
                             index += 1;
                         } else {
                             bail!("некорректная строка патча: {next}");
@@ -393,6 +450,24 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(ws.root.join("new.txt")).unwrap(),
             "hello\nworld\n"
+        );
+    }
+
+    #[test]
+    fn rejects_patch_exceeding_quota_before_write() {
+        let (_dir, ws) = workspace();
+        let patch = "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hello\n";
+        let quota = Quota {
+            used_bytes: 14,
+            used_files: 1,
+            quota_bytes: 14,
+            max_files: 10,
+        };
+        let result = apply_checked(&ws, patch, 1, 1024 * 1024, Some(&quota));
+        assert!(result.is_err(), "патч должен быть отклонён до записи");
+        assert!(
+            !ws.root.join("new.txt").exists(),
+            "файл не должен быть создан при отказе по квоте"
         );
     }
 }

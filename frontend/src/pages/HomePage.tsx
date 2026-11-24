@@ -29,9 +29,11 @@ export function HomePage() {
   const modules = session.modules;
   const minecraftOn = modules.minecraft?.enabled ?? true;
   const cloudOn = modules.cloud?.enabled ?? true;
+  const aiOn = modules.ai?.enabled ?? true;
   const canSystem = can(session, 'system.view');
   const canMinecraft = can(session, 'minecraft.view');
   const canCloud = can(session, 'cloud.view');
+  const canAi = can(session, 'ai.access');
 
   const cards: ModuleCard[] = [
     {
@@ -65,11 +67,14 @@ export function HomePage() {
         'AI-чат и агентская облачная среда: диалоги с моделями, запуск инструментов и изолированные сессии для задач.',
       to: '/workspace/ai',
       icon: <Bot aria-hidden="true" />,
-      action: 'Открыть превью',
-      enabled: true,
-      allowed: true,
-      meta: 'В разработке · раздел скоро появится',
-      badge: 'В разработке',
+      action: canAi ? 'Открыть модуль' : 'Нет доступа',
+      enabled: aiOn,
+      allowed: canAi,
+      meta: aiOn
+        ? canAi
+          ? 'Модуль включён'
+          : 'Нет права ai.access'
+        : 'Отключён администратором',
     },
   ];
 

@@ -666,11 +666,15 @@ async fn serve(
 
     let static_dir = config.resolved_static_dir();
     let state = AppState::new(pool.clone(), config.clone(), metrics);
-    let recovered = nexus::ai::recover_interrupted(&pool).await;
-    if recovered > 0 {
+    let recovery = nexus::ai::orchestrator::spawn_recovery_tasks(state.clone()).await;
+    if recovery.affected() > 0 {
         tracing::warn!(
-            recovered,
-            "AI-задачи и генерации восстановлены после перезапуска"
+            resume = recovery.resume.len(),
+            cancel = recovery.cancel.len(),
+            reconcile = recovery.reconcile.len(),
+            failed_messages = recovery.failed_messages,
+            failed_commands = recovery.failed_commands,
+            "AI-задачи восстановлены после перезапуска"
         );
     }
     nexus::system::monitoring::spawn_realtime_broadcaster(state.clone());

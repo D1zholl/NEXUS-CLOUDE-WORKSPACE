@@ -152,25 +152,46 @@ impl ProviderClient {
             body["tools"] = tools_json(request);
         }
 
-        let response = self
-            .client
-            .post(self.endpoint(&base_url, "chat/completions"))
-            .timeout(Duration::from_secs(timeout))
-            .bearer_auth_optional(&key)
-            .json(&body)
-            .send()
-            .await
-            .context("PolyStrata /chat/completions недоступен")?;
+        let response = tokio::select! {
+            _ = cancel.cancelled() => bail!("генерация отменена"),
+            response = self
+                .client
+                .post(self.endpoint(&base_url, "chat/completions"))
+                .timeout(if request.stream {
+                    // SSE-поток контролируется внутренним deadline; общий timeout
+                    // запроса должен быть заведомо больше, иначе долгая генерация
+                    // обрывается на полуслове.
+                    Duration::from_secs(timeout.saturating_add(30))
+                } else {
+                    Duration::from_secs(timeout)
+                })
+                .bearer_auth_optional(&key)
+                .header(
+                    "Accept",
+                    if request.stream {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                )
+                .json(&body)
+                .send() => response,
+        }
+        .context("PolyStrata /chat/completions недоступен")?;
         if !response.status().is_success() {
             let status = response.status();
-            let _ = response.bytes().await;
-            bail!("PolyStrata /chat/completions вернул HTTP {status}");
+            let body = response.text().await.unwrap_or_default();
+            let body = body.chars().take(300).collect::<String>();
+            if body.trim().is_empty() {
+                bail!("PolyStrata /chat/completions вернул HTTP {status}");
+            }
+            bail!("PolyStrata /chat/completions вернул HTTP {status}: {body}");
         }
         if !request.stream {
-            let value: Value = response
-                .json()
-                .await
-                .context("некорректный JSON Chat Completions")?;
+            let value: Value = tokio::select! {
+                _ = cancel.cancelled() => bail!("генерация отменена"),
+                value = response.json() => value.context("некорректный JSON Chat Completions")?,
+            };
             return parse_completion(&value);
         }
         stream_completion(response, cancel, &mut on_delta, timeout).await

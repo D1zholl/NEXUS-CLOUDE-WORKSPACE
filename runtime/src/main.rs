@@ -1,5 +1,8 @@
 mod config;
 mod filesystem;
+mod job;
+mod mcp;
+mod network;
 mod patch;
 mod process;
 mod protocol;
@@ -288,6 +291,42 @@ async fn check(config: &RuntimeConfig, json_output: bool) -> Result<()> {
             None
         }
     };
+    // Проверяем доступность NEXUS отдельно от WebSocket: handshake с device
+    // token вытеснил бы активное соединение работающей службы Runtime.
+    let nexus_base = if config.server.enroll_url.trim().is_empty() {
+        config
+            .server
+            .url
+            .replace("wss://", "https://")
+            .replace("ws://", "http://")
+            .split("/api/")
+            .next()
+            .unwrap_or("")
+            .to_owned()
+    } else {
+        config.server.enroll_url.trim_end_matches('/').to_owned()
+    };
+    let nexus_ok = if nexus_base.is_empty() {
+        warnings.push("server.enroll_url не задан: доступность NEXUS не проверена".to_owned());
+        false
+    } else {
+        match reqwest::Client::new()
+            .get(format!("{nexus_base}/api/v1/health"))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => true,
+            Ok(response) => {
+                problems.push(format!("NEXUS health вернул HTTP {}", response.status()));
+                false
+            }
+            Err(error) => {
+                problems.push(format!("NEXUS недоступен ({nexus_base}): {error}"));
+                false
+            }
+        }
+    };
     let client = provider::ProviderClient::new(&config.provider)?;
     let (provider_ok, provider_data) = match client.status().await {
         Ok((reachable, data)) => (reachable, data),
@@ -312,6 +351,13 @@ async fn check(config: &RuntimeConfig, json_output: bool) -> Result<()> {
         })
         .collect();
     let ok = problems.is_empty() && provider_ok;
+    let isolation = network::status();
+    if isolation.supported && !isolation.elevated {
+        warnings.push(
+            "Runtime запущен без прав администратора: program.run с network_policy=deny будет отклонён"
+                .to_owned(),
+        );
+    }
     if json_output {
         println!(
             "{}",
@@ -321,6 +367,10 @@ async fn check(config: &RuntimeConfig, json_output: bool) -> Result<()> {
                 "protocolVersion": protocol::PROTOCOL_VERSION,
                 "nodeId": credentials.as_ref().map(|value| value.node_id),
                 "serverUrl": config.server.url,
+                "nexus": {
+                    "baseUrl": nexus_base,
+                    "reachable": nexus_ok,
+                },
                 "provider": {
                     "baseUrl": config.provider.base_url,
                     "reachable": provider_ok,
@@ -328,6 +378,7 @@ async fn check(config: &RuntimeConfig, json_output: bool) -> Result<()> {
                 },
                 "allowedRoots": roots.iter().map(|path| path.display().to_string()).collect::<Vec<_>>(),
                 "programs": program_status,
+                "networkIsolation": network::status(),
                 "problems": problems,
                 "warnings": warnings,
             })

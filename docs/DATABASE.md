@@ -399,25 +399,38 @@ MyLauncher (`manifestVersion: 1`), `launcher_manifest_hash` — SHA-256
 
 ---
 
-## NEXUS AI Workspace (миграция `0019_ai.sql`)
+## NEXUS AI Workspace (миграции `0019_ai.sql`, `0020_ai_hardening.sql`)
 
 Основные таблицы: `ai_provider_configs`, `ai_runtime_nodes`,
 `ai_runtime_enrollment_codes`, `ai_runtime_commands`, `ai_runtime_events`,
-`ai_workspaces`, `ai_user_quotas`, `ai_conversations`, `ai_messages`,
+`ai_runtime_receipts`, `ai_workspaces`, `ai_user_quotas`,
+`ai_workspace_usage_samples`, `ai_conversations`, `ai_messages`,
 `ai_attachments`, `ai_tasks`, `ai_task_events`, `ai_tool_executions`,
 `ai_tool_approvals`, `ai_skills`, `ai_skill_files`, `ai_skill_versions`,
-`ai_skill_assignments`, `ai_tool_policies`, `ai_programs`.
+`ai_skill_version_files`, `ai_skill_assignments`, `ai_tool_policies`,
+`ai_programs`, `ai_mcp_connections`, `ai_mcp_tools`, `ai_mcp_assignments`.
 
 Ключевые инварианты:
 
 * `ai_messages (conversation_id, sequence)` — уникальная последовательность;
 * `ai_tool_executions (task_id, tool_call_id)` — идемпотентность tool call;
+* `ai_tool_executions.dispatch_message_id` — уникальный id команды Runtime для
+  receipt/reconciliation;
 * `ai_tool_approvals (execution_id)` — один approval на execution, TTL,
   `args_hash`, `consumed_at`;
 * `ai_tasks (owner_id, idempotency_key)` — идемпотентное создание задач;
 * `ai_runtime_nodes.token_hash` — только SHA-256 device token;
-* `ai_provider_configs.api_key_cipher` — AES-256-GCM ciphertext;
-* `ai_workspaces.root_path` — не возвращается пользователю без `ai.admin.manage`.
+* `ai_provider_configs.api_key_cipher` / `ai_mcp_connections.secret_cipher` —
+  AES-256-GCM ciphertext;
+* `ai_workspaces.root_path` — не возвращается пользователю без `ai.admin.manage`;
+* `ai_skill_version_files (version_id, path)` — полный snapshot каждой версии;
+* `ai_runtime_commands.message_id` — уникальный id команды;
+* `ai_mcp_tools.tool_id` / `model_name` — уникальные имена для модели.
+
+`ai_tasks` содержит `cancel_status` (`none/requested/confirmed/failed`),
+`cancel_requested_at`, `cancel_confirmed_at`, `cancel_message_id`,
+`recovery_state`. `ai_workspaces` содержит `network_policy`,
+`max_process_memory_bytes`, `usage_reported_by`, `usage_error`.
 
 Источник истины — PostgreSQL; Runtime/WebSocket не хранят историю и статусы как
 единственную копию.

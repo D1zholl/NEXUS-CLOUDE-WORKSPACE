@@ -24,8 +24,8 @@ use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 use crate::ai::runtime::protocol::{
-    Envelope, ProgramDescriptor, ProviderChatCompleted, ProviderResponse, RuntimeCapabilities,
-    ToolOutcome, kind,
+    Envelope, ExecutionStatusResult, McpDiscoveryResult, ProgramDescriptor, ProviderChatCompleted,
+    ProviderResponse, RuntimeCapabilities, ToolOutcome, WorkspaceUsage, kind,
 };
 use crate::ai::{ChatChunk, PROTOCOL_VERSION, PendingRequest, errors};
 use crate::auth::session::generate_token;
@@ -43,6 +43,9 @@ pub enum RuntimeReply {
     ProviderOp(ProviderResponse),
     Tool(Result<ToolOutcome, RuntimeFailure>),
     Failed(RuntimeFailure),
+    McpDiscovery(McpDiscoveryResult),
+    Usage(WorkspaceUsage),
+    ExecutionStatus(ExecutionStatusResult),
 }
 
 #[derive(Debug, Clone)]
@@ -491,6 +494,7 @@ pub async fn rotate_token(
 ///
 /// `persist_payload` позволяет не записывать секреты (API key) в БД: в outbox
 /// остаётся безопасная копия, а ключ подставляется при повторной отправке.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_command(
     state: &AppState,
     node_id: Uuid,
@@ -526,7 +530,7 @@ pub async fn send_command(
     .bind(node_id)
     .fetch_optional(&state.db)
     .await?
-    .ok_or_else(|| errors::runtime_offline())?;
+    .ok_or_else(errors::runtime_offline)?;
 
     let stored_payload = persist_payload.unwrap_or_else(|| payload.clone());
     sqlx::query(
@@ -609,6 +613,12 @@ async fn resend_pending(state: &AppState, node_id: Uuid) {
     .unwrap_or_default();
 
     for mut row in rows {
+        if row.kind == kind::MCP_CONFIGURE {
+            // Конфигурация MCP всегда формируется заново из актуальных
+            // зашифрованных секретов; сохранённая копия секретов не содержит.
+            complete_command(&state.db, row.message_id, false, Some("reconfigured")).await;
+            continue;
+        }
         if row.kind == kind::PROVIDER_START {
             if let Some(provider_id) = row
                 .payload
@@ -706,6 +716,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
 async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, node_id: Uuid) {
     let (mut outbound, mut close_rx) = state.ai.runtime.register(node_id);
     let mut last_message = Instant::now();
+    let mut last_client_sequence = 0i64;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     heartbeat.tick().await;
@@ -760,7 +771,7 @@ async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, node_id: Uuid) 
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
                         last_message = Instant::now();
-                        if let Err(error) = handle_message(&state, node_id, &text).await {
+                        if let Err(error) = handle_message(state.clone(), node_id, &text, &mut last_client_sequence).await {
                             tracing::warn!(%error, %node_id, "ошибка сообщения Runtime");
                             let error_envelope = Envelope::server(
                                 Uuid::new_v4(),
@@ -851,7 +862,12 @@ async fn record_runtime_event(
     .await;
 }
 
-async fn handle_message(state: &AppState, node_id: Uuid, text: &str) -> ApiResult<()> {
+async fn handle_message(
+    state: Arc<AppState>,
+    node_id: Uuid,
+    text: &str,
+    last_client_sequence: &mut i64,
+) -> ApiResult<()> {
     let envelope: Envelope = serde_json::from_str(text)
         .map_err(|error| ApiError::validation(format!("Некорректный кадр Runtime: {error}")))?;
     if envelope.node_id != node_id {
@@ -864,12 +880,36 @@ async fn handle_message(state: &AppState, node_id: Uuid, text: &str) -> ApiResul
     if !protocol_version_supported(envelope.protocol_version) {
         return Err(errors::protocol_unsupported());
     }
+    if let Some(sequence) = envelope.sequence {
+        if sequence <= *last_client_sequence {
+            tracing::warn!(
+                %node_id,
+                sequence,
+                last = *last_client_sequence,
+                kind = %envelope.kind,
+                "повторный/устаревший кадр Runtime отклонён"
+            );
+            return Ok(());
+        }
+        *last_client_sequence = sequence;
+    }
+    let age = Utc::now().signed_duration_since(envelope.timestamp);
+    if age.num_seconds() > 15 * 60 || age.num_seconds() < -15 * 60 {
+        tracing::warn!(
+            %node_id,
+            age_seconds = age.num_seconds(),
+            kind = %envelope.kind,
+            "кадр Runtime с недопустимым timestamp отклонён"
+        );
+        return Ok(());
+    }
+    let ctx: &AppState = &state;
 
     match envelope.kind.as_str() {
         kind::HELLO => {
             let caps: RuntimeCapabilities =
                 serde_json::from_value(envelope.payload.clone()).unwrap_or_default();
-            handle_hello(state, node_id, caps).await?;
+            handle_hello(&state, node_id, caps).await?;
         }
         kind::HEARTBEAT => {
             let status = envelope
@@ -882,7 +922,7 @@ async fn handle_message(state: &AppState, node_id: Uuid, text: &str) -> ApiResul
             } else {
                 "online"
             };
-            touch_node(state, node_id, runtime_status).await?;
+            touch_node(ctx, node_id, runtime_status).await?;
             let ack = Envelope::server(
                 Uuid::new_v4(),
                 kind::HEARTBEAT_ACK,
@@ -897,7 +937,7 @@ async fn handle_message(state: &AppState, node_id: Uuid, text: &str) -> ApiResul
         kind::CAPABILITIES => {
             let caps: RuntimeCapabilities =
                 serde_json::from_value(envelope.payload.clone()).unwrap_or_default();
-            store_capabilities(state, node_id, &caps).await?;
+            store_capabilities(ctx, node_id, &caps).await?;
             let ack = Envelope::server(
                 Uuid::new_v4(),
                 kind::CAPABILITIES_ACK,
@@ -948,7 +988,7 @@ async fn handle_message(state: &AppState, node_id: Uuid, text: &str) -> ApiResul
             complete_command(&state.db, correlation, true, None).await;
             if let Some(task_id) = envelope.task_id {
                 publish_task_event(
-                    state,
+                    ctx,
                     task_id,
                     "ai.task.progress",
                     "provider.completed",
@@ -1003,10 +1043,8 @@ async fn handle_message(state: &AppState, node_id: Uuid, text: &str) -> ApiResul
                     data: Value::Null,
                     error: Some("Некорректный ответ Runtime.".to_owned()),
                 });
-            if let Some(request) = state.ai.runtime.pending_remove(correlation) {
-                if let PendingRequest::Reply(tx) = request {
-                    let _ = tx.send(RuntimeReply::ProviderOp(response));
-                }
+            if let Some(PendingRequest::Reply(tx)) = state.ai.runtime.pending_remove(correlation) {
+                let _ = tx.send(RuntimeReply::ProviderOp(response));
             }
             complete_command(&state.db, correlation, true, None).await;
         }
@@ -1018,7 +1056,7 @@ async fn handle_message(state: &AppState, node_id: Uuid, text: &str) -> ApiResul
                     .and_then(|v| v.as_str())
                     .unwrap_or("Выполнение инструмента");
                 publish_task_event(
-                    state,
+                    ctx,
                     task_id,
                     "ai.tool.progress",
                     message,
@@ -1033,10 +1071,8 @@ async fn handle_message(state: &AppState, node_id: Uuid, text: &str) -> ApiResul
             };
             let outcome: ToolOutcome =
                 serde_json::from_value(envelope.payload.clone()).unwrap_or_default();
-            if let Some(request) = state.ai.runtime.pending_remove(correlation) {
-                if let PendingRequest::Reply(tx) = request {
-                    let _ = tx.send(RuntimeReply::Tool(Ok(outcome)));
-                }
+            if let Some(PendingRequest::Reply(tx)) = state.ai.runtime.pending_remove(correlation) {
+                let _ = tx.send(RuntimeReply::Tool(Ok(outcome)));
             }
             complete_command(&state.db, correlation, true, None).await;
         }
@@ -1056,37 +1092,190 @@ async fn handle_message(state: &AppState, node_id: Uuid, text: &str) -> ApiResul
                 .and_then(|v| v.as_str())
                 .unwrap_or("Инструмент завершился с ошибкой.")
                 .to_owned();
-            if let Some(request) = state.ai.runtime.pending_remove(correlation) {
-                if let PendingRequest::Reply(tx) = request {
-                    let _ = tx.send(RuntimeReply::Tool(Err(RuntimeFailure {
-                        code: code.clone(),
-                        message: message.clone(),
-                    })));
-                }
+            if let Some(PendingRequest::Reply(tx)) = state.ai.runtime.pending_remove(correlation) {
+                let _ = tx.send(RuntimeReply::Tool(Err(RuntimeFailure {
+                    code: code.clone(),
+                    message: message.clone(),
+                })));
             }
             complete_command(&state.db, correlation, false, Some(&message)).await;
         }
-        kind::TASK_CANCELLED => {
-            if let Some(task_id) = envelope.task_id {
+        kind::TASK_CANCEL_ACK => {
+            let cancel_message_id = envelope
+                .payload
+                .get("cancelRequestMessageId")
+                .and_then(|value| value.as_str())
+                .and_then(|value| Uuid::parse_str(value).ok());
+            let accepted = envelope
+                .payload
+                .get("accepted")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if let Some(message_id) = cancel_message_id {
                 let _ = sqlx::query(
+                    "update ai_runtime_commands
+                        set acknowledged_at = now()
+                      where message_id = $1 and status in ('pending', 'sent')",
+                )
+                .bind(message_id)
+                .execute(&ctx.db)
+                .await;
+            }
+            if let Some(task_id) = envelope.task_id {
+                if !accepted {
+                    let message = envelope
+                        .payload
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("Runtime не принял запрос отмены.");
+                    let _ = sqlx::query(
+                        "update ai_tasks
+                            set cancel_status = 'failed', status_text = $2, updated_at = now()
+                          where id = $1 and cancel_status = 'requested'",
+                    )
+                    .bind(task_id)
+                    .bind(message.chars().take(500).collect::<String>())
+                    .execute(&ctx.db)
+                    .await;
+                    record_runtime_event(
+                        ctx,
+                        node_id,
+                        "cancel_rejected",
+                        message,
+                        json!({ "taskId": task_id }),
+                    )
+                    .await;
+                }
+            }
+        }
+        kind::TASK_CANCELLED => {
+            let Some(task_id) = envelope.task_id else {
+                return Ok(());
+            };
+            let confirmed = envelope
+                .payload
+                .get("confirmed")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let cancel_message_id = envelope
+                .payload
+                .get("cancelRequestMessageId")
+                .and_then(|value| value.as_str())
+                .and_then(|value| Uuid::parse_str(value).ok());
+            let reason = envelope
+                .payload
+                .get("reason")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_owned();
+            if confirmed {
+                let updated = sqlx::query(
                     "update ai_tasks
-                        set status = 'cancelled', finished_at = coalesce(finished_at, now()),
-                            updated_at = now(), stage = 'cancelled'
-                      where id = $1 and status in ('queued', 'running', 'waiting_approval')",
+                        set status = 'cancelled', stage = 'cancelled',
+                            status_text = 'Задача отменена и подтверждена Runtime',
+                            cancel_status = 'confirmed', cancel_confirmed_at = now(),
+                            cancel_message_id = coalesce($2, cancel_message_id),
+                            finished_at = coalesce(finished_at, now()), updated_at = now()
+                      where id = $1 and cancel_status = 'requested'
+                        and status in ('queued', 'running', 'waiting_approval')",
                 )
                 .bind(task_id)
-                .execute(&state.db)
+                .bind(cancel_message_id)
+                .execute(&ctx.db)
+                .await?;
+                if updated.rows_affected() > 0 {
+                    if let Some(message_id) = cancel_message_id {
+                        complete_command(&ctx.db, message_id, true, None).await;
+                    }
+                    let _ = sqlx::query(
+                        "update ai_tool_executions
+                            set status = 'cancelled', error_code = 'AI_TASK_CANCELLED',
+                                error_message = 'Задача отменена; Runtime подтвердил остановку.',
+                                finished_at = coalesce(finished_at, now()), updated_at = now()
+                          where task_id = $1 and status in ('pending', 'running', 'waiting_approval')",
+                    )
+                    .bind(task_id)
+                    .execute(&ctx.db)
+                    .await;
+                    publish_task_event(
+                        ctx,
+                        task_id,
+                        "ai.task.cancelled",
+                        "Задача отменена и подтверждена Runtime.",
+                        json!({
+                            "cancelConfirmed": true,
+                            "terminatedProcesses": envelope
+                                .payload
+                                .get("terminatedProcesses")
+                                .cloned()
+                                .unwrap_or(json!(0)),
+                        }),
+                    )
+                    .await;
+                    record_runtime_event(
+                        ctx,
+                        node_id,
+                        "task_cancelled",
+                        "Runtime подтвердил отмену задачи",
+                        json!({ "taskId": task_id, "reason": reason }),
+                    )
+                    .await;
+                }
+            } else {
+                let _ = sqlx::query(
+                    "update ai_tasks
+                        set cancel_status = 'failed',
+                            status_text = 'Runtime не подтвердил остановку задачи',
+                            updated_at = now()
+                      where id = $1 and cancel_status = 'requested'",
+                )
+                .bind(task_id)
+                .execute(&ctx.db)
                 .await;
                 publish_task_event(
-                    state,
+                    ctx,
                     task_id,
-                    "ai.task.cancelled",
-                    "Задача отменена Runtime.",
-                    json!({}),
+                    "ai.task.progress",
+                    "Runtime не подтвердил остановку задачи",
+                    json!({ "cancelConfirmed": false, "reason": reason }),
                 )
                 .await;
             }
         }
+        kind::WORKSPACE_USAGE_RESULT => {
+            let Some(correlation) = envelope.correlation_id else {
+                return Ok(());
+            };
+            let usage: WorkspaceUsage =
+                serde_json::from_value(envelope.payload.clone()).unwrap_or_default();
+            if let Some(PendingRequest::Reply(tx)) = ctx.ai.runtime.pending_remove(correlation) {
+                let _ = tx.send(RuntimeReply::Usage(usage));
+            }
+            complete_command(&ctx.db, correlation, true, None).await;
+        }
+        kind::EXECUTION_STATUS_RESULT => {
+            let Some(correlation) = envelope.correlation_id else {
+                return Ok(());
+            };
+            let result: ExecutionStatusResult =
+                serde_json::from_value(envelope.payload.clone()).unwrap_or_default();
+            if let Some(PendingRequest::Reply(tx)) = ctx.ai.runtime.pending_remove(correlation) {
+                let _ = tx.send(RuntimeReply::ExecutionStatus(result));
+            }
+            complete_command(&ctx.db, correlation, true, None).await;
+        }
+        kind::MCP_TOOLS => {
+            let Some(correlation) = envelope.correlation_id else {
+                return Ok(());
+            };
+            let result: McpDiscoveryResult =
+                serde_json::from_value(envelope.payload.clone()).unwrap_or_default();
+            if let Some(PendingRequest::Reply(tx)) = ctx.ai.runtime.pending_remove(correlation) {
+                let _ = tx.send(RuntimeReply::McpDiscovery(result));
+            }
+            complete_command(&ctx.db, correlation, true, None).await;
+        }
+        kind::MCP_CONFIGURE_ACK => {}
         kind::RUNTIME_ERROR => {
             let code = envelope
                 .payload
@@ -1099,7 +1288,7 @@ async fn handle_message(state: &AppState, node_id: Uuid, text: &str) -> ApiResul
                 .and_then(|v| v.as_str())
                 .unwrap_or("Ошибка Runtime.");
             tracing::warn!(%node_id, code, message, "Runtime сообщил об ошибке");
-            record_runtime_event(state, node_id, "error", message, envelope.payload.clone()).await;
+            record_runtime_event(ctx, node_id, "error", message, envelope.payload.clone()).await;
         }
         _ => {
             tracing::debug!(%node_id, kind = %envelope.kind, "неизвестный тип сообщения Runtime");
@@ -1108,7 +1297,11 @@ async fn handle_message(state: &AppState, node_id: Uuid, text: &str) -> ApiResul
     Ok(())
 }
 
-async fn handle_hello(state: &AppState, node_id: Uuid, caps: RuntimeCapabilities) -> ApiResult<()> {
+async fn handle_hello(
+    state: &Arc<AppState>,
+    node_id: Uuid,
+    caps: RuntimeCapabilities,
+) -> ApiResult<()> {
     if !protocol_version_supported(caps.protocol_version.max(1)) {
         return Err(errors::protocol_unsupported());
     }
@@ -1157,6 +1350,9 @@ async fn handle_hello(state: &AppState, node_id: Uuid, caps: RuntimeCapabilities
     );
     state.ai.runtime.send(node_id, &ack);
     resend_pending(state, node_id).await;
+    crate::ai::mcp::send_configuration(state, node_id).await;
+    crate::ai::orchestrator::reconcile_node(state, node_id).await;
+    crate::ai::orchestrator::resume_pending_for_node(state, node_id).await;
     Ok(())
 }
 
@@ -1184,8 +1380,8 @@ async fn store_programs(
         sqlx::query(
             "insert into ai_programs
                 (runtime_node_id, program_id, name, executable, version, available,
-                 allowed_args, risk, enabled, updated_at)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, true, now())
+                 allowed_args, risk, network_policy, enabled, updated_at)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, now())
              on conflict (runtime_node_id, program_id) do update
                 set name = excluded.name, executable = excluded.executable,
                     version = excluded.version, available = excluded.available,
@@ -1204,6 +1400,11 @@ async fn store_programs(
         .bind(program.available)
         .bind(&program.allowed_args)
         .bind(&program.risk)
+        .bind(if program.network_policy == "allow" {
+            "allow"
+        } else {
+            "deny"
+        })
         .execute(&state.db)
         .await?;
     }
@@ -1289,6 +1490,13 @@ pub fn capabilities_summary(capabilities: &Value) -> HashMap<String, Value> {
             .get("programs")
             .cloned()
             .unwrap_or_else(|| json!([])),
+    );
+    map.insert(
+        "networkIsolation".to_owned(),
+        capabilities
+            .get("networkIsolation")
+            .cloned()
+            .unwrap_or(Value::Null),
     );
     map
 }

@@ -124,10 +124,10 @@ Invoke-ScriptAnalyzer -Path tests -Recurse -Settings ./PSScriptAnalyzerSettings.
 | Frontend-тесты | `npm run test` | **92 passed, 0 failed**, 17 файлов; 23.11.2026 |
 | Production-сборка | `npm run build` | успешно: CSS 98,68 кБ (gzip 18,04 кБ); 23.11.2026 |
 | E2E с MyLauncher | ручной запуск клиента | **не выполнялся** в среде разработки: нет GUI-сессии и лицензионного запуска Minecraft. Проверены HTTP-контракт и Range интеграционными тестами; см. 3.3 |
-| E2E (I1 + K4) | `npx playwright test` | **25 passed, 0 failed** (4,2 мин), release backend + production frontend; добавлена проверка 15-й страницы AI Management |
-| AI integration (backend) | `cargo test --test ai_tests -- --test-threads=1` | **10 passed**: enrollment/revoke, encrypted provider key, Chat без tools, Agent tool cycle, approvals approve/reject/expiry, Skills import/assign/load, module gate, ownership |
-| AI Runtime | `cd runtime; cargo test --all-targets` | **20 passed, 1 ignored** (`real_polystrata_smoke` требует реальную PolyStrata): WS tool execution/dedup, SSE, traversal, patch, args/schema |
-| AI full regression | `cargo test -j 1` | **402 passed, 0 failed**; в т.ч. AI, Cloud, Minecraft, Launcher, jobs, realtime, Windows invariants |
+| E2E (I1 + K4 + AI) | `npx playwright test` | **26 passed, 0 failed** (5,5 мин), release backend + production frontend + отдельная БД; новые AI Workspace/Management/MCP smoke |
+| AI integration (backend) | `cargo test --test ai_tests` | **16 passed**: enrollment/revoke, encrypted provider key, Chat без tools, Agent tool cycle, approvals, Skills/version snapshots, module gate, ownership, MCP discovery/execution, usage, cancel confirmation, idempotency, recovery |
+| AI Runtime | `cd runtime; cargo test --all-targets` | **28 passed, 1 ignored** (`real_polystrata_smoke`): WS tool execution/dedup, SSE, traversal, patch/quota, args/schema, MCP JSON-RPC, network helpers |
+| AI full regression | `cargo test -j 1` | **411 passed, 0 failed, 1 ignored** (`logs/backend-full-tests-final.log`) |
 | E2E Chromium/Chrome/Edge | `npm run e2e:browsers -- e2e/system.spec.ts` | после добавления AI Management не перезапускался; предыдущий прогон 10 passed (14 страниц), 20.11.2026 |
 | PowerShell | `Invoke-ScriptAnalyzer -Path deployment,tests -Recurse -Settings ./PSScriptAnalyzerSettings.psd1` | **0 нарушений** (базовые правила K3, PSScriptAnalyzer 1.25) |
 | I5 load | `tests/load.ps1 -FileCount 16 -FileSizeMb 4` | **PASS**: 200 списков (avg 1,8 мс, p95 2,5 мс), 16 файлов / 64 МиБ, 32 скачивания с SHA, 24/24 Range, private 13,8 → 17,2 МБ (+3,4); отчёт `docs/reports/load-20261120-i5.md` |
@@ -248,13 +248,29 @@ DnD `mods → config` и длинный ввод в модальной форм�
 ## AI Workspace tests
 
 - `backend/tests/ai_tests.rs` — реальный PostgreSQL, HTTP-сервер и WebSocket
-  Runtime: enrollment single-use, revoke, Chat streaming без tools, Agent tool
-  cycle/executions, approval binding/consumption, module gate, ownership.
-- `runtime` unit tests — path traversal/absolute paths, atomic write, search,
-  unified diff, JSON Schema, config validation, argument policy.
-- Frontend: `npm run typecheck`, `npm run test`, `npm run build`, `npm run lint`.
-- Полный регрессионный прогон: `cargo test -j 2`, существующие smoke/ws/
-  resilience/load/E2E сценарии.
+  Runtime: enrollment single-use/revoke, Chat streaming без tools, Agent tool
+  cycle/executions, approval binding/consumption/expiry, module gate, ownership,
+  MCP registry/discovery/execution, workspace usage reporting, cancel
+  confirmation, `Idempotency-Key`, skill version snapshots/restore, restart
+  recovery classification. **16 passed**.
+- `backend/tests/ai_runtime_stand.rs` — автоматизированный стенд с отдельным
+  процессом `nexus-ai-runtime.exe` и локальным OpenAI-compatible stub:
+  enrollment CLI, WSS, heartbeat, Chat streaming, Agent `fs_write`, usage,
+  cancel с подтверждением, restart/reconnect, revoke. **1 passed** (ignored по
+  умолчанию, запуск `scripts/ai-runtime-stand.ps1`). Это не второй компьютер.
+- `runtime` unit/integration tests — traversal/absolute/symlink, atomic write,
+  search, unified diff и quota pre-check, JSON Schema, config, args, Job
+  Object/network helpers, SSE/tool calls, MCP JSON-RPC, sequence/messageId
+  dedup: **27 passed, 1 ignored**.
+- `real_polystrata_smoke` — `#[ignore]`; требует реальную PolyStrata. Запуск:
+  `scripts/ai-polystrata-smoke.ps1`.
+- Frontend: `npm run typecheck`, `npm run test` (**92 passed**), `npm run build`,
+  `npm run lint`.
+- Полный регрессионный прогон Phase 9: `cargo test -j 1` (см.
+  `logs/backend-full-tests-phase9.log`), Playwright E2E, существующие
+  smoke/ws/resilience/load сценарии. `-j 2` не используется: интеграционные
+  тесты делят `nexus_test` и очищают схему.
 
-PolyStrata на дев-машине отсутствует; production-проверка выполняется
-`nexus-ai-runtime check --json` против реального локального экземпляра.
+Двухмашинный сценарий: `scripts/ai-two-machine-check.ps1`. Без его реального
+прохождения проект не объявляется Production Ready (см.
+`docs/AI_PRODUCTION_AUDIT.md`).

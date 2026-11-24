@@ -13,6 +13,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{LimitsConfig, ProgramConfig};
+use crate::{job, network};
 
 pub struct ProgramRuntime {
     pub config: ProgramConfig,
@@ -95,6 +96,7 @@ impl ProgramRegistry {
                     "patterns": program.patterns.len(),
                     "maxArgs": 32,
                 }),
+                network_policy: program.config.network_policy.clone(),
             })
             .collect();
         items.sort_by(|a, b| a.program_id.cmp(&b.program_id));
@@ -149,12 +151,15 @@ impl ProgramRegistry {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run(
         &self,
         program_id: &str,
         args: &[String],
         workspace_root: &std::path::Path,
         cwd: Option<&std::path::Path>,
+        network_policy: &str,
+        memory_limit_bytes: u64,
         cancel: &CancellationToken,
     ) -> Result<ProcessOutcome> {
         self.validate_args(program_id, args)?;
@@ -169,6 +174,27 @@ impl ProgramRegistry {
         if crate::filesystem::is_reparse_point(workdir)? {
             bail!("рабочий каталог не может быть symlink/junction");
         }
+        // Сеть разрешена только если и политика программы, и политика задачи
+        // разрешают её. Иначе Runtime временно блокирует outbound firewall-правилом.
+        let effective_network =
+            if program.config.network_policy == "allow" && network_policy == "allow" {
+                "allow"
+            } else {
+                "deny"
+            };
+        let executable = std::path::Path::new(&program.config.executable);
+        let _network_guard = network::NetworkGuard::acquire(executable, effective_network)
+            .with_context(|| {
+                format!(
+                    "не удалось применить сетевую изоляцию для {}",
+                    program.config.program_id
+                )
+            })?;
+        let memory_limit = if memory_limit_bytes > 0 {
+            memory_limit_bytes
+        } else {
+            program.config.max_memory_bytes
+        };
 
         let started = Instant::now();
         let mut command = tokio::process::Command::new(&program.config.executable);
@@ -195,6 +221,7 @@ impl ProgramRegistry {
             .spawn()
             .with_context(|| format!("не удалось запустить {}", program.config.program_id))?;
         let pid = child.id();
+        let job = job::assign(&child, memory_limit);
         let max_output = program
             .config
             .max_output_bytes
@@ -217,12 +244,18 @@ impl ProgramRegistry {
             status = child.wait() => Some(status.map_err(|error| anyhow::anyhow!("ошибка ожидания процесса: {error}"))?),
             _ = tokio::time::sleep(timeout) => {
                 timed_out = true;
+                if let Some(job) = &job {
+                    job.terminate();
+                }
                 kill_tree(pid, &mut child).await;
                 child.wait().await.ok();
                 None
             }
             _ = cancel.cancelled() => {
                 cancelled = true;
+                if let Some(job) = &job {
+                    job.terminate();
+                }
                 kill_tree(pid, &mut child).await;
                 child.wait().await.ok();
                 None
@@ -334,6 +367,8 @@ mod tests {
             allow_any_args: false,
             timeout_seconds: 10,
             max_output_bytes: 1024,
+            network_policy: "allow".into(),
+            max_memory_bytes: 0,
         }];
         ProgramRegistry::new(&programs, &LimitsConfig::default())
     }

@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::ai::models::WorkspaceRow;
 use crate::ai::runtime;
-use crate::ai::{admin, errors, providers, skills, tools, workspaces};
+use crate::ai::{admin, errors, mcp, providers, skills, tools, workspaces};
 use crate::api::ApiOk;
 use crate::auth::session::AuthUser;
 use crate::core::error::{ApiError, ApiResult};
@@ -36,7 +36,10 @@ pub fn router() -> Router<Arc<AppState>> {
             get(list_enrollment_codes).post(create_enrollment),
         )
         .route("/enrollment-codes/{id}/revoke", post(revoke_enrollment))
-        .route("/providers", post(create_provider))
+        .route(
+            "/providers",
+            get(list_providers_admin).post(create_provider),
+        )
         .route(
             "/providers/{id}",
             patch(update_provider).delete(delete_provider),
@@ -46,11 +49,21 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/providers/{id}/status", get(provider_status))
         .route("/workspaces", get(list_workspaces).post(create_workspace))
         .route("/workspaces/{id}", patch(update_workspace))
+        .route(
+            "/workspaces/{id}/usage/refresh",
+            post(refresh_workspace_usage),
+        )
         .route("/skills", get(list_skills))
         .route("/skills/import", post(import_skill))
         .route("/skills/{id}", patch(update_skill).delete(delete_skill))
         .route("/skills/{id}/enable", post(enable_skill))
         .route("/skills/{id}/disable", post(disable_skill))
+        .route("/skills/{id}/versions", get(list_skill_versions))
+        .route("/skills/{id}/versions/{version}", get(get_skill_version))
+        .route(
+            "/skills/{id}/versions/{version}/restore",
+            post(restore_skill_version),
+        )
         .route(
             "/skills/{id}/assignments",
             get(list_assignments).post(assign_skill),
@@ -61,6 +74,28 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/tools", get(list_tools))
         .route("/tools/{id}", patch(update_tool))
+        .route(
+            "/mcp-connections",
+            get(list_mcp_connections).post(create_mcp_connection),
+        )
+        .route(
+            "/mcp-connections/{id}",
+            patch(update_mcp_connection).delete(delete_mcp_connection),
+        )
+        .route(
+            "/mcp-connections/{id}/discover",
+            post(discover_mcp_connection),
+        )
+        .route("/mcp-connections/{id}/tools", get(list_mcp_tools))
+        .route(
+            "/mcp-connections/{id}/assignments",
+            get(list_mcp_assignments).post(assign_mcp),
+        )
+        .route(
+            "/mcp-connections/{id}/assignments/{assignment_id}",
+            delete(remove_mcp_assignment),
+        )
+        .route("/mcp-tools/{id}", patch(update_mcp_tool))
         .route("/programs", get(list_programs))
         .route("/programs/{id}", patch(update_program))
         .route("/quotas", get(list_quotas))
@@ -312,6 +347,17 @@ async fn validate_provider_node(db: &sqlx::PgPool, node_id: Option<Uuid>) -> Api
     Ok(())
 }
 
+async fn list_providers_admin(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let rows = providers::list_providers(&state.db, true).await?;
+    Ok(ApiOk(json!({
+        "items": rows.iter().map(crate::ai::models::ProviderRow::summary).collect::<Vec<_>>()
+    })))
+}
+
 async fn create_provider(
     State(state): State<Arc<AppState>>,
     actor: AuthUser,
@@ -541,6 +587,8 @@ struct WorkspaceInput {
     allowed_tools: Option<Vec<String>>,
     allowed_programs: Option<Vec<String>>,
     status: Option<String>,
+    network_policy: Option<String>,
+    max_process_memory_bytes: Option<i64>,
 }
 
 async fn validate_workspace_input(
@@ -561,24 +609,47 @@ async fn validate_workspace_input(
         ));
     }
     workspaces::validate_root_path(&request.root_path)?;
+    if let Some(policy) = &request.network_policy {
+        if !matches!(policy.as_str(), "allow" | "deny") {
+            return Err(ApiError::validation(
+                "networkPolicy должен быть allow или deny.",
+            ));
+        }
+    }
     let name = request.name.trim();
     if name.is_empty() || name.chars().count() > 100 {
         return Err(ApiError::validation(
             "Название workspace должно содержать 1..100 символов.",
         ));
     }
+    let catalog = tools::catalog();
     let known_tools: std::collections::HashSet<&str> =
-        tools::catalog().iter().map(|tool| tool.id).collect();
+        catalog.iter().map(|tool| tool.id.as_str()).collect();
     let allowed_tools = request
         .allowed_tools
         .clone()
         .unwrap_or_else(tools::default_workspace_tools);
     for tool in &allowed_tools {
-        if !known_tools.contains(tool.as_str()) {
-            return Err(ApiError::validation(format!(
-                "Неизвестный инструмент в allowlist: {tool}"
-            )));
+        if known_tools.contains(tool.as_str()) {
+            continue;
         }
+        if tool.starts_with("mcp.") {
+            let exists: bool = sqlx::query_scalar(
+                "select exists(select 1 from ai_mcp_tools t
+                    join ai_mcp_connections c on c.id = t.connection_id
+                   where t.tool_id = $1 and c.runtime_node_id = $2)",
+            )
+            .bind(tool)
+            .bind(request.runtime_node_id)
+            .fetch_one(db)
+            .await?;
+            if exists {
+                continue;
+            }
+        }
+        return Err(ApiError::validation(format!(
+            "Неизвестный инструмент в allowlist: {tool}"
+        )));
     }
     let allowed_programs = request.allowed_programs.clone().unwrap_or_default();
     for program in &allowed_programs {
@@ -621,11 +692,12 @@ async fn create_workspace(
         "insert into ai_workspaces
             (owner_id, runtime_node_id, name, root_path, quota_bytes, max_files,
              max_file_bytes, max_parallel_tasks, max_task_seconds, allowed_tools,
-             allowed_programs, status, created_by)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             allowed_programs, status, network_policy, max_process_memory_bytes, created_by)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          returning id, owner_id, runtime_node_id, name, root_path, quota_bytes, max_files,
                    max_file_bytes, max_parallel_tasks, max_task_seconds, allowed_tools,
                    allowed_programs, status, usage_bytes, usage_files, usage_checked_at,
+                   network_policy, max_process_memory_bytes, usage_reported_by, usage_error,
                    created_by, created_at, updated_at",
     )
     .bind(request.owner_id)
@@ -655,6 +727,13 @@ async fn create_workspace(
     .bind(&allowed_tools)
     .bind(&allowed_programs)
     .bind(request.status.unwrap_or_else(|| "active".to_owned()))
+    .bind(
+        request
+            .network_policy
+            .clone()
+            .unwrap_or_else(|| "deny".to_owned()),
+    )
+    .bind(request.max_process_memory_bytes.unwrap_or(0).max(0))
     .bind(actor.id)
     .fetch_one(&state.db)
     .await?;
@@ -713,6 +792,12 @@ async fn update_workspace(
             .allowed_programs
             .or(Some(existing.allowed_programs.clone())),
         status: request.status.or(Some(existing.status.clone())),
+        network_policy: request
+            .network_policy
+            .or(Some(existing.network_policy.clone())),
+        max_process_memory_bytes: request
+            .max_process_memory_bytes
+            .or(Some(existing.max_process_memory_bytes)),
     };
     let (allowed_tools, allowed_programs) = validate_workspace_input(&state.db, &merged).await?;
     if !matches!(merged.status.as_deref(), Some("active" | "suspended")) {
@@ -725,11 +810,13 @@ async fn update_workspace(
             set owner_id = $2, runtime_node_id = $3, name = $4, root_path = $5,
                 quota_bytes = $6, max_files = $7, max_file_bytes = $8,
                 max_parallel_tasks = $9, max_task_seconds = $10, allowed_tools = $11,
-                allowed_programs = $12, status = $13, updated_at = now()
+                allowed_programs = $12, status = $13, network_policy = $14,
+                max_process_memory_bytes = $15, updated_at = now()
           where id = $1
           returning id, owner_id, runtime_node_id, name, root_path, quota_bytes, max_files,
                     max_file_bytes, max_parallel_tasks, max_task_seconds, allowed_tools,
                     allowed_programs, status, usage_bytes, usage_files, usage_checked_at,
+                    network_policy, max_process_memory_bytes, usage_reported_by, usage_error,
                     created_by, created_at, updated_at",
     )
     .bind(id)
@@ -760,6 +847,8 @@ async fn update_workspace(
     .bind(&allowed_tools)
     .bind(&allowed_programs)
     .bind(merged.status.as_deref().unwrap_or("active"))
+    .bind(merged.network_policy.as_deref().unwrap_or("deny"))
+    .bind(merged.max_process_memory_bytes.unwrap_or(0).max(0))
     .fetch_one(&state.db)
     .await?;
     record(
@@ -777,6 +866,18 @@ async fn update_workspace(
     )
     .await;
     Ok(ApiOk(row.view(true)))
+}
+
+async fn refresh_workspace_usage(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let id = parse_path(path)?;
+    let _ = workspaces::load_workspace(&state.db, id).await?;
+    workspaces::refresh_usage(&state, id).await?;
+    Ok(ApiOk(workspaces::usage_summary(&state.db, id).await?))
 }
 
 async fn list_skills(
@@ -824,6 +925,58 @@ struct SkillUpdate {
     name: Option<String>,
     description: Option<String>,
     enabled: Option<bool>,
+}
+
+async fn list_skill_versions(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let id = parse_path(path)?;
+    Ok(ApiOk(json!({
+        "items": skills::versions(&state.db, id).await?
+    })))
+}
+
+async fn get_skill_version(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<(Uuid, i32)>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let (id, version) = parse_path(path)?;
+    let files = skills::version_files(&state.db, id, version).await?;
+    Ok(ApiOk(json!({
+        "skillId": id,
+        "version": version,
+        "files": files,
+    })))
+}
+
+async fn restore_skill_version(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<(Uuid, i32)>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let (id, version) = parse_path(path)?;
+    let result = skills::restore(&state, &actor, id, version).await?;
+    record(
+        &state.db,
+        AuditEvent {
+            event_type: "ai.skill.restored",
+            actor_id: Some(actor.id),
+            actor_username: &actor.username,
+            target_type: "ai_skill",
+            target_id: &id.to_string(),
+            result: "success",
+            ip: &actor.ip,
+            details: json!({ "restoredFrom": version }),
+        },
+    )
+    .await;
+    Ok(ApiOk(result))
 }
 
 async fn update_skill(
@@ -1106,6 +1259,416 @@ async fn remove_assignment(
     Ok(ApiOk(json!({ "removed": true })))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpConnectionInput {
+    name: String,
+    runtime_node_id: Uuid,
+    endpoint: String,
+    secret: Option<String>,
+    enabled: Option<bool>,
+    allow_private_network: Option<bool>,
+}
+
+async fn list_mcp_connections(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let rows = mcp::list_connections(&state.db).await?;
+    Ok(ApiOk(json!({
+        "items": rows.iter().map(|row| row.summary()).collect::<Vec<_>>()
+    })))
+}
+
+async fn create_mcp_connection(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    body: Result<Json<McpConnectionInput>, JsonRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let request = parse_body(body)?;
+    let name = request.name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err(ApiError::validation(
+            "Название MCP-соединения должно содержать 1..100 символов.",
+        ));
+    }
+    let allow_private = request.allow_private_network.unwrap_or(false);
+    mcp::validate_endpoint(&request.endpoint, allow_private)?;
+    validate_provider_node(&state.db, Some(request.runtime_node_id)).await?;
+    let secret_cipher = match request
+        .secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(secret) => Some(state.ai.secrets.encrypt(secret)?),
+        None => None,
+    };
+    let id: Uuid = sqlx::query_scalar(
+        "insert into ai_mcp_connections
+            (name, runtime_node_id, endpoint, secret_cipher, enabled,
+             allow_private_network, created_by)
+         values ($1, $2, $3, $4, $5, $6, $7) returning id",
+    )
+    .bind(name)
+    .bind(request.runtime_node_id)
+    .bind(request.endpoint.trim())
+    .bind(&secret_cipher)
+    .bind(request.enabled.unwrap_or(false))
+    .bind(allow_private)
+    .bind(actor.id)
+    .fetch_one(&state.db)
+    .await?;
+    record(
+        &state.db,
+        AuditEvent {
+            event_type: "ai.mcp.created",
+            actor_id: Some(actor.id),
+            actor_username: &actor.username,
+            target_type: "ai_mcp_connection",
+            target_id: &id.to_string(),
+            result: "success",
+            ip: &actor.ip,
+            details: json!({
+                "name": name,
+                "runtimeNodeId": request.runtime_node_id,
+                "allowPrivateNetwork": allow_private,
+            }),
+        },
+    )
+    .await;
+    let row = mcp::load_connection(&state.db, id).await?;
+    Ok(ApiOk(row.summary()))
+}
+
+async fn update_mcp_connection(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+    body: Result<Json<McpConnectionInput>, JsonRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let id = parse_path(path)?;
+    let existing = mcp::load_connection(&state.db, id).await?;
+    let request = parse_body(body)?;
+    let allow_private = request
+        .allow_private_network
+        .unwrap_or(existing.allow_private_network);
+    mcp::validate_endpoint(&request.endpoint, allow_private)?;
+    validate_provider_node(&state.db, Some(request.runtime_node_id)).await?;
+    let secret_cipher = match request.secret.as_deref() {
+        Some(value) if value.trim().is_empty() => None,
+        Some(value) => Some(state.ai.secrets.encrypt(value.trim())?),
+        None => existing.secret_cipher.clone(),
+    };
+    let enabled = request.enabled.unwrap_or(existing.enabled);
+    sqlx::query(
+        "update ai_mcp_connections
+            set name = $2, runtime_node_id = $3, endpoint = $4, secret_cipher = $5,
+                enabled = $6, allow_private_network = $7,
+                status = case when $6 then status else 'disabled' end,
+                updated_at = now()
+          where id = $1",
+    )
+    .bind(id)
+    .bind(request.name.trim())
+    .bind(request.runtime_node_id)
+    .bind(request.endpoint.trim())
+    .bind(&secret_cipher)
+    .bind(enabled)
+    .bind(allow_private)
+    .execute(&state.db)
+    .await?;
+    if enabled {
+        mcp::send_configuration(&state, request.runtime_node_id).await;
+    }
+    let row = mcp::load_connection(&state.db, id).await?;
+    Ok(ApiOk(row.summary()))
+}
+
+async fn delete_mcp_connection(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let id = parse_path(path)?;
+    let row = mcp::load_connection(&state.db, id).await?;
+    sqlx::query("delete from ai_tool_policies where tool_id like $1")
+        .bind(format!("mcp.{id}.%"))
+        .execute(&state.db)
+        .await?;
+    sqlx::query("delete from ai_mcp_connections where id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    mcp::send_configuration(&state, row.runtime_node_id).await;
+    record(
+        &state.db,
+        AuditEvent {
+            event_type: "ai.mcp.deleted",
+            actor_id: Some(actor.id),
+            actor_username: &actor.username,
+            target_type: "ai_mcp_connection",
+            target_id: &id.to_string(),
+            result: "success",
+            ip: &actor.ip,
+            details: json!({ "name": row.name }),
+        },
+    )
+    .await;
+    Ok(ApiOk(json!({ "id": id, "deleted": true })))
+}
+
+async fn discover_mcp_connection(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let id = parse_path(path)?;
+    Ok(ApiOk(mcp::discover(&state, &actor, id).await?))
+}
+
+async fn list_mcp_tools(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let id = parse_path(path)?;
+    let _ = mcp::load_connection(&state.db, id).await?;
+    let rows = mcp::list_tools_for_connection(&state.db, id).await?;
+    Ok(ApiOk(json!({
+        "items": rows.iter().map(|row| row.summary()).collect::<Vec<_>>()
+    })))
+}
+
+async fn assign_mcp(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+    body: Result<Json<AssignmentInput>, JsonRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let connection_id = parse_path(path)?;
+    let request = parse_body(body)?;
+    let connection = mcp::load_connection(&state.db, connection_id).await?;
+    match request.scope.as_str() {
+        "user" => {
+            let user_id = request
+                .user_id
+                .ok_or_else(|| ApiError::validation("Укажите userId."))?;
+            let exists: bool =
+                sqlx::query_scalar("select exists(select 1 from users where id = $1)")
+                    .bind(user_id)
+                    .fetch_one(&state.db)
+                    .await?;
+            if !exists {
+                return Err(ApiError::validation("Пользователь не найден."));
+            }
+        }
+        "workspace" => {
+            let workspace_id = request
+                .workspace_id
+                .ok_or_else(|| ApiError::validation("Укажите workspaceId."))?;
+            let workspace = workspaces::load_workspace(&state.db, workspace_id).await?;
+            if workspace.runtime_node_id != connection.runtime_node_id {
+                return Err(ApiError::validation(
+                    "MCP-соединение и workspace привязаны к разным Runtime.",
+                ));
+            }
+        }
+        "role" => {
+            let role_id = request
+                .role_id
+                .ok_or_else(|| ApiError::validation("Укажите roleId."))?;
+            let exists: bool =
+                sqlx::query_scalar("select exists(select 1 from roles where id = $1)")
+                    .bind(role_id)
+                    .fetch_one(&state.db)
+                    .await?;
+            if !exists {
+                return Err(ApiError::validation("Роль не найдена."));
+            }
+        }
+        _ => {
+            return Err(ApiError::validation(
+                "scope должен быть user, workspace или role.",
+            ));
+        }
+    }
+    let inserted: Option<Uuid> = sqlx::query_scalar(
+        "insert into ai_mcp_assignments
+            (connection_id, scope, user_id, workspace_id, role_id, assigned_by)
+         values ($1, $2, $3, $4, $5, $6)
+         on conflict do nothing
+         returning id",
+    )
+    .bind(connection_id)
+    .bind(&request.scope)
+    .bind(request.user_id)
+    .bind(request.workspace_id)
+    .bind(request.role_id)
+    .bind(actor.id)
+    .fetch_optional(&state.db)
+    .await?;
+    let id = match inserted {
+        Some(id) => id,
+        None => {
+            sqlx::query_scalar(
+                "update ai_mcp_assignments set enabled = true
+                  where connection_id = $1 and scope = $2
+                    and coalesce(user_id, '00000000-0000-0000-0000-000000000000'::uuid) =
+                        coalesce($3, '00000000-0000-0000-0000-000000000000'::uuid)
+                    and coalesce(workspace_id, '00000000-0000-0000-0000-000000000000'::uuid) =
+                        coalesce($4, '00000000-0000-0000-0000-000000000000'::uuid)
+                    and coalesce(role_id, '00000000-0000-0000-0000-000000000000'::uuid) =
+                        coalesce($5, '00000000-0000-0000-0000-000000000000'::uuid)
+                  returning id",
+            )
+            .bind(connection_id)
+            .bind(&request.scope)
+            .bind(request.user_id)
+            .bind(request.workspace_id)
+            .bind(request.role_id)
+            .fetch_one(&state.db)
+            .await?
+        }
+    };
+    record(
+        &state.db,
+        AuditEvent {
+            event_type: "ai.mcp.assigned",
+            actor_id: Some(actor.id),
+            actor_username: &actor.username,
+            target_type: "ai_mcp_connection",
+            target_id: &connection_id.to_string(),
+            result: "success",
+            ip: &actor.ip,
+            details: json!({
+                "scope": request.scope,
+                "userId": request.user_id,
+                "workspaceId": request.workspace_id,
+                "roleId": request.role_id,
+            }),
+        },
+    )
+    .await;
+    Ok(ApiOk(
+        json!({ "id": id, "connectionId": connection_id, "scope": request.scope }),
+    ))
+}
+
+async fn list_mcp_assignments(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let connection_id = parse_path(path)?;
+    #[derive(sqlx::FromRow, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Row {
+        id: Uuid,
+        scope: String,
+        user_id: Option<Uuid>,
+        workspace_id: Option<Uuid>,
+        role_id: Option<Uuid>,
+        enabled: bool,
+        created_at: chrono::DateTime<chrono::Utc>,
+    }
+    let rows = sqlx::query_as::<_, Row>(
+        "select id, scope, user_id, workspace_id, role_id, enabled, created_at
+           from ai_mcp_assignments where connection_id = $1 order by created_at",
+    )
+    .bind(connection_id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(ApiOk(json!({ "items": rows })))
+}
+
+async fn remove_mcp_assignment(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<(Uuid, Uuid)>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let (connection_id, assignment_id) = parse_path(path)?;
+    sqlx::query("delete from ai_mcp_assignments where id = $1 and connection_id = $2")
+        .bind(assignment_id)
+        .bind(connection_id)
+        .execute(&state.db)
+        .await?;
+    Ok(ApiOk(json!({ "removed": true })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpToolUpdate {
+    enabled: Option<bool>,
+    risk: Option<String>,
+    approval_policy: Option<String>,
+    max_timeout_seconds: Option<i32>,
+    max_output_bytes: Option<i64>,
+}
+
+async fn update_mcp_tool(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+    body: Result<Json<McpToolUpdate>, JsonRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let id = parse_path(path)?;
+    let request = parse_body(body)?;
+    if let Some(risk) = &request.risk {
+        if !matches!(risk.as_str(), "low" | "medium" | "high" | "critical") {
+            return Err(ApiError::validation("Недопустимый risk."));
+        }
+    }
+    if let Some(policy) = &request.approval_policy {
+        if !matches!(policy.as_str(), "never" | "risk" | "always") {
+            return Err(ApiError::validation("Недопустимый approvalPolicy."));
+        }
+    }
+    let row = sqlx::query_as::<_, mcp::McpToolRow>(
+        "update ai_mcp_tools
+            set enabled = coalesce($2, enabled), risk = coalesce($3, risk), updated_at = now()
+          where id = $1
+          returning id, connection_id, tool_name, tool_id, model_name, description,
+                    input_schema, risk, enabled, discovered_at, updated_at",
+    )
+    .bind(id)
+    .bind(request.enabled)
+    .bind(request.risk.as_deref())
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::not_found("MCP tool не найден."))?;
+    sqlx::query(
+        "update ai_tool_policies
+            set enabled = coalesce($2, enabled),
+                risk = coalesce($3, risk),
+                approval_policy = coalesce($4, approval_policy),
+                max_timeout_seconds = coalesce($5, max_timeout_seconds),
+                max_output_bytes = coalesce($6, max_output_bytes),
+                updated_by = $7, updated_at = now()
+          where tool_id = $1",
+    )
+    .bind(&row.tool_id)
+    .bind(request.enabled)
+    .bind(request.risk.as_deref())
+    .bind(request.approval_policy.as_deref())
+    .bind(request.max_timeout_seconds)
+    .bind(request.max_output_bytes)
+    .bind(actor.id)
+    .execute(&state.db)
+    .await?;
+    Ok(ApiOk(row.summary()))
+}
+
 async fn list_tools(
     State(state): State<Arc<AppState>>,
     actor: AuthUser,
@@ -1232,11 +1795,13 @@ async fn list_programs(
         available: bool,
         risk: String,
         enabled: bool,
+        network_policy: String,
+        max_memory_bytes: i64,
         updated_at: chrono::DateTime<chrono::Utc>,
     }
     let rows = sqlx::query_as::<_, Row>(
         "select id, runtime_node_id, program_id, name, executable, version, available,
-                risk, enabled, updated_at
+                risk, enabled, network_policy, max_memory_bytes, updated_at
            from ai_programs order by runtime_node_id, program_id",
     )
     .fetch_all(&state.db)
@@ -1249,6 +1814,8 @@ async fn list_programs(
 struct ProgramUpdate {
     enabled: Option<bool>,
     risk: Option<String>,
+    network_policy: Option<String>,
+    max_memory_bytes: Option<i64>,
 }
 
 async fn update_program(
@@ -1265,14 +1832,25 @@ async fn update_program(
             return Err(ApiError::validation("Недопустимый уровень риска."));
         }
     }
+    if let Some(policy) = request.network_policy.as_deref() {
+        if !matches!(policy, "allow" | "deny") {
+            return Err(ApiError::validation(
+                "networkPolicy должен быть allow или deny.",
+            ));
+        }
+    }
     let updated = sqlx::query(
         "update ai_programs
-            set enabled = coalesce($2, enabled), risk = coalesce($3, risk), updated_at = now()
+            set enabled = coalesce($2, enabled), risk = coalesce($3, risk),
+                network_policy = coalesce($4, network_policy),
+                max_memory_bytes = coalesce($5, max_memory_bytes), updated_at = now()
           where id = $1",
     )
     .bind(id)
     .bind(request.enabled)
     .bind(request.risk)
+    .bind(request.network_policy)
+    .bind(request.max_memory_bytes.map(|value| value.max(0)))
     .execute(&state.db)
     .await?;
     if updated.rows_affected() == 0 {

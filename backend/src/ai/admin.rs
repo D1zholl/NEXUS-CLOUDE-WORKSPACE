@@ -66,6 +66,21 @@ pub async fn overview(state: &AppState) -> ApiResult<Value> {
         sqlx::query_scalar("select max(last_heartbeat_at) from ai_runtime_nodes")
             .fetch_one(&state.db)
             .await?;
+    let mcp_total: i64 = sqlx::query_scalar("select count(*) from ai_mcp_connections")
+        .fetch_one(&state.db)
+        .await?;
+    let mcp_enabled: i64 =
+        sqlx::query_scalar("select count(*) from ai_mcp_connections where enabled = true")
+            .fetch_one(&state.db)
+            .await?;
+    let mcp_error: i64 =
+        sqlx::query_scalar("select count(*) from ai_mcp_connections where status = 'error'")
+            .fetch_one(&state.db)
+            .await?;
+    let mcp_tools: i64 =
+        sqlx::query_scalar("select count(*) from ai_mcp_tools where enabled = true")
+            .fetch_one(&state.db)
+            .await?;
     let queue_age: Option<f64> = sqlx::query_scalar(
         "select extract(epoch from (now() - min(created_at))) from ai_tasks where status = 'queued'",
     )
@@ -140,6 +155,12 @@ pub async fn overview(state: &AppState) -> ApiResult<Value> {
             "queueAgeSeconds": queue_age,
         },
         "approvals": { "pending": approvals_pending },
+        "mcp": {
+            "total": mcp_total,
+            "enabled": mcp_enabled,
+            "error": mcp_error,
+            "tools": mcp_tools,
+        },
         "streaming": { "activeChats": active_chats, "events": stream_events },
         "lastHeartbeatAt": last_heartbeat,
         "nodes": nodes_json,

@@ -18,21 +18,64 @@ use crate::core::error::{ApiError, ApiResult};
 
 #[derive(Clone, Debug)]
 pub struct ToolSpec {
-    pub id: &'static str,
-    pub model_name: &'static str,
+    pub id: String,
+    pub model_name: String,
     pub version: i32,
-    pub name: &'static str,
-    pub description: &'static str,
-    pub category: &'static str,
-    pub risk: &'static str,
-    pub approval_policy: &'static str,
-    pub permission: &'static str,
+    pub name: String,
+    pub description: String,
+    pub category: String,
+    pub risk: String,
+    pub approval_policy: String,
+    pub permission: String,
     pub idempotent: bool,
     pub timeout_seconds: i64,
     pub max_output_bytes: i64,
     pub input_schema: Value,
-    /// true — инструмент исполняется backend (skill.load), не Runtime.
+    /// true — инструмент исполняется backend (skill.load, mcp discovery), не Runtime.
     pub server_side: bool,
+    /// true — инструмент является внешним MCP-tool и исполняется Runtime через MCP.
+    pub mcp: bool,
+}
+
+/// Статическое описание встроенного инструмента.
+#[derive(Clone, Debug)]
+struct StaticToolSpec {
+    id: &'static str,
+    model_name: &'static str,
+    version: i32,
+    name: &'static str,
+    description: &'static str,
+    category: &'static str,
+    risk: &'static str,
+    approval_policy: &'static str,
+    permission: &'static str,
+    idempotent: bool,
+    timeout_seconds: i64,
+    max_output_bytes: i64,
+    input_schema: Value,
+    server_side: bool,
+}
+
+impl From<StaticToolSpec> for ToolSpec {
+    fn from(value: StaticToolSpec) -> Self {
+        Self {
+            id: value.id.to_owned(),
+            model_name: value.model_name.to_owned(),
+            version: value.version,
+            name: value.name.to_owned(),
+            description: value.description.to_owned(),
+            category: value.category.to_owned(),
+            risk: value.risk.to_owned(),
+            approval_policy: value.approval_policy.to_owned(),
+            permission: value.permission.to_owned(),
+            idempotent: value.idempotent,
+            timeout_seconds: value.timeout_seconds,
+            max_output_bytes: value.max_output_bytes,
+            input_schema: value.input_schema,
+            server_side: value.server_side,
+            mcp: false,
+        }
+    }
 }
 
 const RISK_LOW: &str = "low";
@@ -53,8 +96,12 @@ fn path_property(description: &str) -> Value {
 }
 
 pub fn catalog() -> Vec<ToolSpec> {
+    static_catalog().into_iter().map(Into::into).collect()
+}
+
+fn static_catalog() -> Vec<StaticToolSpec> {
     vec![
-        ToolSpec {
+        StaticToolSpec {
             id: "fs.list",
             model_name: "fs_list",
             version: 1,
@@ -76,7 +123,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             ),
             server_side: false,
         },
-        ToolSpec {
+        StaticToolSpec {
             id: "fs.read",
             model_name: "fs_read",
             version: 1,
@@ -98,7 +145,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             ),
             server_side: false,
         },
-        ToolSpec {
+        StaticToolSpec {
             id: "fs.write",
             model_name: "fs_write",
             version: 1,
@@ -121,7 +168,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             ),
             server_side: false,
         },
-        ToolSpec {
+        StaticToolSpec {
             id: "fs.search",
             model_name: "fs_search",
             version: 1,
@@ -144,7 +191,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             ),
             server_side: false,
         },
-        ToolSpec {
+        StaticToolSpec {
             id: "fs.mkdir",
             model_name: "fs_mkdir",
             version: 1,
@@ -163,7 +210,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             ),
             server_side: false,
         },
-        ToolSpec {
+        StaticToolSpec {
             id: "fs.move",
             model_name: "fs_move",
             version: 1,
@@ -186,7 +233,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             ),
             server_side: false,
         },
-        ToolSpec {
+        StaticToolSpec {
             id: "fs.copy",
             model_name: "fs_copy",
             version: 1,
@@ -209,7 +256,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             ),
             server_side: false,
         },
-        ToolSpec {
+        StaticToolSpec {
             id: "fs.delete",
             model_name: "fs_delete",
             version: 1,
@@ -231,7 +278,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             ),
             server_side: false,
         },
-        ToolSpec {
+        StaticToolSpec {
             id: "fs.apply_patch",
             model_name: "fs_apply_patch",
             version: 1,
@@ -253,7 +300,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             ),
             server_side: false,
         },
-        ToolSpec {
+        StaticToolSpec {
             id: "program.run",
             model_name: "program_run",
             version: 1,
@@ -280,7 +327,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             ),
             server_side: false,
         },
-        ToolSpec {
+        StaticToolSpec {
             id: "skill.load",
             model_name: "skill_load",
             version: 1,
@@ -374,7 +421,7 @@ pub async fn policy(db: &PgPool, tool_id: &str) -> ApiResult<ToolPolicyRow> {
     .bind(tool_id)
     .fetch_optional(db)
     .await?
-    .ok_or_else(|| errors::tool_not_allowed())
+    .ok_or_else(errors::tool_not_allowed)
 }
 
 fn risk_rank(value: &str) -> u8 {
@@ -436,7 +483,7 @@ pub fn authorize_workspace(
         ));
     }
     let allowed: HashSet<&str> = workspace.allowed_tools.iter().map(String::as_str).collect();
-    if !allowed.contains(spec.id) {
+    if !allowed.contains(spec.id.as_str()) {
         return Err(errors::tool_not_allowed());
     }
     Ok(())
@@ -447,7 +494,7 @@ pub fn authorize_workspace(
 pub fn default_workspace_tools() -> Vec<String> {
     let mut tools: Vec<String> = catalog()
         .into_iter()
-        .filter(|tool| matches!(tool.risk, RISK_LOW | RISK_MEDIUM))
+        .filter(|tool| matches!(tool.risk.as_str(), RISK_LOW | RISK_MEDIUM))
         .map(|tool| tool.id.to_owned())
         .collect();
     if !tools.iter().any(|id| id == "skill.load") {
@@ -467,14 +514,14 @@ pub async fn allowed_for_task(
     let mut result = Vec::new();
     for spec in catalog() {
         if spec.server_side {
-            if include_skills && spec.id == "skill.load" && allowed.contains(spec.id) {
+            if include_skills && spec.id == "skill.load" && allowed.contains(spec.id.as_str()) {
                 if let Some(policy) = rows.iter().find(|row| row.tool_id == spec.id) {
                     result.push((spec, policy.clone()));
                 }
             }
             continue;
         }
-        if !allowed.contains(spec.id) {
+        if !allowed.contains(spec.id.as_str()) {
             continue;
         }
         if let Some(policy) = rows.iter().find(|row| row.tool_id == spec.id) {

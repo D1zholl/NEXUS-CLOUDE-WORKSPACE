@@ -26,7 +26,8 @@ RBAC, WebSocket-события и проверяемые контракты API.
 > [docs/TESTING.md](docs/TESTING.md). Краткая инструкция установки и входа на
 > Windows — [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md).
 > AI Workspace, Runtime и протокол — [docs/AI_WORKSPACE.md](docs/AI_WORKSPACE.md)
-> и [runtime/README.md](runtime/README.md).
+> и [runtime/README.md](runtime/README.md). Production-аудит Phase 9 —
+> [docs/AI_PRODUCTION_AUDIT.md](docs/AI_PRODUCTION_AUDIT.md).
 
 ---
 

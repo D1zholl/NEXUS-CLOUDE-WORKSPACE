@@ -3,12 +3,16 @@
     Локальный quality-gate NEXUS WORKSPACE (замена CI).
 
 .DESCRIPTION
-    Последовательно выполняет проверки backend и frontend:
+    Последовательно выполняет проверки backend, runtime и frontend:
     fmt, clippy, test, typecheck, lint, vitest, build.
     Любая упавшая фаза останавливает прогон с её кодом выхода.
+    Backend integration tests запускаются с -j 1: они делят тестовую БД.
 
 .PARAMETER SkipBackend
-    Не запускать проверки Rust (например, без установленного PostgreSQL).
+    Не запускать проверки Rust backend (например, без установленного PostgreSQL).
+
+.PARAMETER SkipRuntime
+    Не запускать проверки NEXUS AI Runtime.
 
 .PARAMETER SkipFrontend
     Не запускать проверки frontend.
@@ -19,6 +23,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipBackend,
+    [switch]$SkipRuntime,
     [switch]$SkipFrontend
 )
 
@@ -65,7 +70,20 @@ if (-not $SkipBackend) {
         cargo clippy -j 2 --all-targets -- -D warnings
     }
     Invoke-Phase -Name 'backend: test' -WorkingDirectory (Join-Path $root 'backend') -Action {
-        cargo test -j 2
+        cargo test -j 1
+    }
+}
+
+if (-not $SkipRuntime) {
+    $runtime = Join-Path $root 'runtime'
+    Invoke-Phase -Name 'runtime: fmt' -WorkingDirectory $runtime -Action {
+        cargo fmt --all -- --check
+    }
+    Invoke-Phase -Name 'runtime: clippy' -WorkingDirectory $runtime -Action {
+        cargo clippy --all-targets -- -D warnings
+    }
+    Invoke-Phase -Name 'runtime: test' -WorkingDirectory $runtime -Action {
+        cargo test --all-targets
     }
 }
 

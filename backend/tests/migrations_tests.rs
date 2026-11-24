@@ -120,9 +120,9 @@ async fn check_schema(pool: &PgPool) -> Result<(), String> {
     }
 
     // 2. Последняя миграция — синхронизация статуса сборки и релизов.
-    if applied.last().copied() != Some(19) {
+    if applied.last().copied() != Some(20) {
         return Err(format!(
-            "последняя миграция: {:?}, ожидалась 19",
+            "последняя миграция: {:?}, ожидалась 20",
             applied.last()
         ));
     }

@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
@@ -10,11 +11,12 @@ use tokio::sync::Mutex;
 
 use crate::config::LimitsConfig;
 use crate::filesystem::{
-    Workspace, list_entries, normalize_relative, read_text, search, sha256_hex, write_atomic,
+    Workspace, directory_usage, list_entries, normalize_relative, read_text, search, sha256_hex,
+    write_atomic,
 };
 use crate::patch;
 use crate::process::{ProcessOutcome, ProgramRegistry};
-use crate::protocol::{ToolDescriptor, ToolExecuteRequest, ToolOutcome};
+use crate::protocol::{ToolDescriptor, ToolExecuteRequest, ToolOutcome, WorkspaceUsage};
 
 pub struct ToolExecutor {
     limits: LimitsConfig,
@@ -262,13 +264,23 @@ impl ToolExecutor {
             "fs.move" => self.fs_move(&workspace, &request.arguments)?,
             "fs.copy" => self.fs_copy(&workspace, &request.arguments, request)?,
             "fs.delete" => self.fs_delete(&workspace, &request.arguments)?,
-            "fs.apply_patch" => self.fs_apply_patch(&workspace, &request.arguments)?,
+            "fs.apply_patch" => self.fs_apply_patch(&workspace, &request.arguments, request)?,
             "program.run" => {
                 return self
-                    .program_run(&workspace, &request.arguments, cancel)
+                    .program_run(&workspace, &request.arguments, request, cancel)
                     .await;
             }
             _ => bail!("неизвестный инструмент"),
+        };
+        // Usage измеряется после изменяющих операций. Ошибка измерения не
+        // отменяет уже выполненную операцию, но попадает в usage.error.
+        let usage = if mutable {
+            Some(usage_for(
+                &workspace,
+                self.limits.max_directory_entries.saturating_mul(100),
+            ))
+        } else {
+            None
         };
         let result_text = serde_json::to_string_pretty(&result).unwrap_or_default();
         Ok(ToolOutcome {
@@ -281,6 +293,7 @@ impl ToolExecutor {
             ),
             exit_code: None,
             duration_ms: 0,
+            usage,
         })
     }
 
@@ -481,13 +494,36 @@ impl ToolExecutor {
         Ok(json!({ "path": workspace.relative(&path), "deleted": true }))
     }
 
-    fn fs_apply_patch(&self, workspace: &Workspace, args: &Value) -> Result<Value> {
+    fn fs_apply_patch(
+        &self,
+        workspace: &Workspace,
+        args: &Value,
+        request: &ToolExecuteRequest,
+    ) -> Result<Value> {
         let patch_text = required_str(args, "patch")?;
         let strip = args
             .get("strip")
             .and_then(|value| value.as_u64())
             .unwrap_or(1) as usize;
-        patch::apply(workspace, patch_text, strip, self.limits.max_file_bytes)
+        let quota = if request.workspace_quota_bytes > 0 || request.workspace_max_files > 0 {
+            let max_entries = self.limits.max_directory_entries.saturating_mul(100);
+            let (used_bytes, used_files) = directory_usage(&workspace.root, max_entries)?;
+            Some(patch::Quota {
+                used_bytes,
+                used_files,
+                quota_bytes: request.workspace_quota_bytes,
+                max_files: request.workspace_max_files,
+            })
+        } else {
+            None
+        };
+        patch::apply_checked(
+            workspace,
+            patch_text,
+            strip,
+            self.effective_max_file(request),
+            quota.as_ref(),
+        )
     }
 
     fn effective_max_file(&self, limits: &ToolExecuteRequest) -> u64 {
@@ -537,6 +573,7 @@ impl ToolExecutor {
         &self,
         workspace: &Workspace,
         args: &Value,
+        request: &ToolExecuteRequest,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<ToolOutcome> {
         let program_id = required_str(args, "programId")?;
@@ -556,10 +593,110 @@ impl ToolExecutor {
             .filter(|value| !value.trim().is_empty())
             .map(|value| workspace.resolve_existing(value))
             .transpose()?;
-        self.programs
-            .run(program_id, &list, &workspace.root, cwd.as_deref(), cancel)
-            .await
-            .map(process_outcome)
+        // Перед запуском проверяем, что текущий usage не превышает квоту.
+        let max_entries = self.limits.max_directory_entries.saturating_mul(100);
+        if request.workspace_quota_bytes > 0 || request.workspace_max_files > 0 {
+            let (used_bytes, used_files) = directory_usage(&workspace.root, max_entries)?;
+            self.check_quota_values(request, used_bytes, used_files, 0, 0)?;
+        }
+        // Во время работы программа может писать файлы. Мониторим usage и
+        // принудительно завершаем дерево при превышении квоты.
+        let run_cancel = cancel.child_token();
+        let violation = Arc::new(tokio::sync::Mutex::new(None::<String>));
+        let monitor = if request.workspace_quota_bytes > 0 || request.workspace_max_files > 0 {
+            let root = workspace.root.clone();
+            let limits = request.workspace_quota_bytes;
+            let max_files = request.workspace_max_files;
+            let token = run_cancel.clone();
+            let violation = violation.clone();
+            Some(tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_millis(750));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    if token.is_cancelled() {
+                        break;
+                    }
+                    match directory_usage(&root, max_entries) {
+                        Ok((bytes, files)) => {
+                            if limits > 0 && bytes as i64 > limits {
+                                *violation.lock().await = Some(format!(
+                                    "программа превысила квоту workspace: {bytes} > {limits} байт"
+                                ));
+                                token.cancel();
+                                break;
+                            }
+                            if max_files > 0 && files as i64 > max_files {
+                                *violation.lock().await = Some(format!(
+                                    "программа превысила лимит файлов workspace: {files} > {max_files}"
+                                ));
+                                token.cancel();
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "не удалось измерить usage при запуске программы");
+                        }
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+        let result = self
+            .programs
+            .run(
+                program_id,
+                &list,
+                &workspace.root,
+                cwd.as_deref(),
+                &request.network_policy,
+                request.max_memory_bytes.max(0) as u64,
+                &run_cancel,
+            )
+            .await;
+        if let Some(monitor) = monitor {
+            monitor.abort();
+        }
+        if let Some(message) = violation.lock().await.clone() {
+            bail!("{message}");
+        }
+        let outcome = result.map(process_outcome)?;
+        let usage = Some(usage_for(workspace, max_entries));
+        let mut outcome = outcome;
+        outcome.usage = usage;
+        Ok(outcome)
+    }
+
+    fn check_quota_values(
+        &self,
+        request: &ToolExecuteRequest,
+        used_bytes: u64,
+        used_files: u64,
+        delta_bytes: i64,
+        delta_files: i64,
+    ) -> Result<()> {
+        if request.workspace_quota_bytes > 0
+            && used_bytes as i64 + delta_bytes > request.workspace_quota_bytes
+        {
+            bail!(
+                "операция превышает квоту workspace: {} + {} > {} байт",
+                used_bytes,
+                delta_bytes,
+                request.workspace_quota_bytes
+            );
+        }
+        if request.workspace_max_files > 0
+            && used_files as i64 + delta_files > request.workspace_max_files
+        {
+            bail!(
+                "операция превышает лимит файлов workspace: {} + {} > {}",
+                used_files,
+                delta_files,
+                request.workspace_max_files
+            );
+        }
+        Ok(())
     }
 }
 
@@ -569,40 +706,33 @@ fn process_outcome(outcome: ProcessOutcome) -> ToolOutcome {
         result_text: Some(outcome.result_text),
         exit_code: outcome.exit_code,
         duration_ms: outcome.duration_ms,
+        usage: None,
     }
 }
 
-fn directory_usage(root: &std::path::Path, max_entries: usize) -> Result<(u64, u64)> {
-    let mut bytes = 0u64;
-    let mut files = 0u64;
-    let mut stack = vec![root.to_path_buf()];
-    let mut visited = 0usize;
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            if visited >= max_entries {
-                bail!("превышен лимит обхода workspace при проверке квоты");
-            }
-            visited += 1;
-            let path = entry.path();
-            if crate::filesystem::is_reparse_point(&path).unwrap_or(true) {
-                continue;
-            }
-            let metadata = match entry.metadata() {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            };
-            if metadata.is_dir() {
-                stack.push(path);
-            } else if metadata.is_file() {
-                bytes += metadata.len();
-                files += 1;
-            }
-        }
+fn usage_for(workspace: &Workspace, max_entries: usize) -> WorkspaceUsage {
+    match directory_usage(&workspace.root, max_entries) {
+        Ok((bytes, files)) => WorkspaceUsage {
+            bytes: bytes as i64,
+            files: files as i64,
+            checked_at: Some(chrono::Utc::now()),
+            error: None,
+        },
+        Err(error) => WorkspaceUsage {
+            bytes: 0,
+            files: 0,
+            checked_at: Some(chrono::Utc::now()),
+            error: Some(
+                format!("usage недоступен: {error}")
+                    .chars()
+                    .take(300)
+                    .collect(),
+            ),
+        },
     }
-    Ok((bytes, files))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn descriptor(
     id: &str,
     name: &str,

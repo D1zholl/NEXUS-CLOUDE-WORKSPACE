@@ -16,12 +16,13 @@ use uuid::Uuid;
 
 use crate::ai::models::{MessageRow, ProviderRow, TaskRow, WorkspaceRow};
 use crate::ai::runtime::protocol::{
-    ChatMessage, ProviderChatCompleted, ProviderChatRequest, ToolCall, ToolDefinition,
-    ToolExecuteRequest, ToolOutcome, kind,
+    ChatMessage, ExecutionStatusResult, ProviderChatCompleted, ProviderChatRequest, ToolCall,
+    ToolDefinition, ToolExecuteRequest, ToolOutcome, kind,
 };
 use crate::ai::runtime::{self, RuntimeFailure, RuntimeReply};
 use crate::ai::{
-    PendingRequest, approvals, conversations, errors, events, providers, skills, tools, workspaces,
+    PendingRequest, approvals, conversations, errors, events, mcp, providers, skills, tools,
+    workspaces,
 };
 use crate::auth::session::AuthUser;
 use crate::core::error::{ApiError, ApiResult};
@@ -37,7 +38,7 @@ pub async fn load_task(db: &PgPool, id: Uuid) -> ApiResult<TaskRow> {
         "select id, conversation_id, owner_id, runtime_node_id, provider_id, model,
                 workspace_id, status, stage, status_text, progress, iterations,
                 max_iterations, tool_calls_count, timeout_seconds, human_input, context,
-                cancel_requested, started_at, finished_at, error_code, error_message,
+                cancel_requested, cancel_status, cancel_requested_at, cancel_confirmed_at, started_at, finished_at, error_code, error_message,
                 created_at, updated_at
            from ai_tasks where id = $1",
     )
@@ -73,6 +74,9 @@ pub fn task_view(task: &TaskRow) -> Value {
         "toolCallsCount": task.tool_calls_count,
         "timeoutSeconds": task.timeout_seconds,
         "cancelRequested": task.cancel_requested,
+        "cancelStatus": task.cancel_status,
+        "cancelRequestedAt": task.cancel_requested_at,
+        "cancelConfirmedAt": task.cancel_confirmed_at,
         "startedAt": task.started_at,
         "finishedAt": task.finished_at,
         "errorCode": task.error_code,
@@ -99,7 +103,7 @@ pub async fn start_task(
             "select id, conversation_id, owner_id, runtime_node_id, provider_id, model,
                     workspace_id, status, stage, status_text, progress, iterations,
                     max_iterations, tool_calls_count, timeout_seconds, human_input, context,
-                    cancel_requested, started_at, finished_at, error_code, error_message,
+                    cancel_requested, cancel_status, cancel_requested_at, cancel_confirmed_at, started_at, finished_at, error_code, error_message,
                     created_at, updated_at
                from ai_tasks where owner_id = $1 and idempotency_key = $2",
         )
@@ -158,7 +162,7 @@ pub async fn start_task(
          returning id, conversation_id, owner_id, runtime_node_id, provider_id, model,
                    workspace_id, status, stage, status_text, progress, iterations,
                    max_iterations, tool_calls_count, timeout_seconds, human_input, context,
-                   cancel_requested, started_at, finished_at, error_code, error_message,
+                   cancel_requested, cancel_status, cancel_requested_at, cancel_confirmed_at, started_at, finished_at, error_code, error_message,
                    created_at, updated_at",
     )
     .bind(conversation_id)
@@ -320,18 +324,11 @@ async fn run_task(state: Arc<AppState>, task_id: Uuid) {
         let code = error.code.clone();
         let message = error.message.clone();
         if code == "AI_TASK_CANCELLED" {
-            let _ = finalize(
-                &state,
-                task_id,
-                "cancelled",
-                "cancelled",
-                "Задача отменена",
-                None,
-                None,
-                None,
-                Value::Null,
-            )
-            .await;
+            // Отмена ещё не подтверждена Runtime: не объявляем задачу
+            // отменённой локально. cancel endpoint/watchdog отвечает за статус.
+            if let Ok(task) = load_task(&state.db, task_id).await {
+                request_runtime_cancel(&state, task_id, task.runtime_node_id).await;
+            }
         } else {
             let _ = finalize(
                 &state,
@@ -389,19 +386,7 @@ async fn run_task_inner(state: Arc<AppState>, task_id: Uuid) -> ApiResult<()> {
 
     loop {
         if token.is_cancelled() {
-            cancel_runtime_task(&state, &data).await;
-            finalize(
-                &state,
-                task_id,
-                "cancelled",
-                "cancelled",
-                "Задача отменена пользователем",
-                None,
-                None,
-                None,
-                Value::Null,
-            )
-            .await?;
+            request_runtime_cancel(&state, task_id, data.node_id).await;
             return Ok(());
         }
         if Utc::now() >= deadline {
@@ -438,19 +423,7 @@ async fn run_task_inner(state: Arc<AppState>, task_id: Uuid) -> ApiResult<()> {
             match process {
                 ToolProcess::Waiting => return Ok(()),
                 ToolProcess::Cancelled => {
-                    cancel_runtime_task(&state, &data).await;
-                    finalize(
-                        &state,
-                        task_id,
-                        "cancelled",
-                        "cancelled",
-                        "Задача отменена пользователем",
-                        None,
-                        None,
-                        None,
-                        Value::Null,
-                    )
-                    .await?;
+                    request_runtime_cancel(&state, task_id, data.node_id).await;
                     return Ok(());
                 }
             }
@@ -608,27 +581,29 @@ async fn handle_tool_call(
     deadline: chrono::DateTime<Utc>,
     token: &tokio_util::sync::CancellationToken,
 ) -> ApiResult<ToolCallOutcome> {
-    let Some(spec) = tools::by_model_name(&call.function.name) else {
-        let message = format!(
-            "Инструмент '{}' не существует в каталоге NEXUS и не был выполнен.",
-            call.function.name
-        );
-        record_blocked(state, data.task.id, call, &message).await;
-        return Ok(ToolCallOutcome::Continue {
-            content: tool_error_content(&message),
-        });
-    };
     let Some((allowed_spec, policy)) = allowed
         .iter()
-        .find(|(item, _)| item.id == spec.id)
+        .find(|(item, _)| item.model_name == call.function.name)
         .map(|(item, policy)| (item.clone(), policy.clone()))
     else {
-        let message = format!("Инструмент '{}' не разрешён для этого workspace.", spec.id);
+        let known = tools::by_model_name(&call.function.name).is_some();
+        let message = if known {
+            format!(
+                "Инструмент '{}' не разрешён для этого workspace.",
+                call.function.name
+            )
+        } else {
+            format!(
+                "Инструмент '{}' не существует в каталоге NEXUS и не был выполнен.",
+                call.function.name
+            )
+        };
         record_blocked(state, data.task.id, call, &message).await;
         return Ok(ToolCallOutcome::Continue {
             content: tool_error_content(&message),
         });
     };
+    let spec = allowed_spec.clone();
 
     let arguments = match parse_arguments(&call.function.arguments) {
         Ok(arguments) => arguments,
@@ -663,6 +638,20 @@ async fn handle_tool_call(
         return Ok(ToolCallOutcome::Continue {
             content: tool_error_content(&message),
         });
+    }
+
+    // Повторная проверка MCP-назначения на момент вызова: доступ мог быть
+    // отозван после создания задачи.
+    if spec.mcp {
+        if let Err(error) =
+            mcp::authorize_tool(&state.db, &spec.id, data.task.owner_id, &data.workspace).await
+        {
+            record_blocked(state, data.task.id, call, &error.message).await;
+            insert_blocked_execution(state, data, call, &spec, &arguments, &error.message).await?;
+            return Ok(ToolCallOutcome::Continue {
+                content: tool_error_content(&error.message),
+            });
+        }
     }
 
     // Дополнительная проверка программы: только зарегистрированная и
@@ -918,7 +907,7 @@ async fn insert_blocked_execution(
     .bind(spec.version)
     .bind(arguments)
     .bind(&hash)
-    .bind(spec.risk)
+    .bind(spec.risk.clone())
     .bind(message.chars().take(500).collect::<String>())
     .bind(format!("{}:{}", data.task.id, call.id))
     .execute(&state.db)
@@ -1068,8 +1057,16 @@ async fn execute_runtime_tool(
         .max(1)
         .min(spec.timeout_seconds as i32)
         .min(600);
+    let (network_policy, max_memory_bytes) = if spec.id == "program.run" {
+        program_policy(state, data, arguments).await?
+    } else {
+        (
+            data.workspace.network_policy.clone(),
+            data.workspace.max_process_memory_bytes,
+        )
+    };
     let request = ToolExecuteRequest {
-        tool_id: spec.id.to_owned(),
+        tool_id: spec.id.clone(),
         version: spec.version,
         arguments: arguments.clone(),
         workspace_id: data.workspace.id,
@@ -1079,10 +1076,27 @@ async fn execute_runtime_tool(
         workspace_quota_bytes: data.workspace.quota_bytes,
         workspace_max_files: data.workspace.max_files as i64,
         workspace_max_file_bytes: data.workspace.max_file_bytes,
+        workspace_usage_bytes: data.workspace.usage_bytes,
+        workspace_usage_files: data.workspace.usage_files,
+        network_policy,
+        max_memory_bytes,
     };
     let wire = serde_json::to_value(&request)
         .map_err(|error| ApiError::internal(format!("tool request json: {error}")))?;
     let message_id = Uuid::new_v4();
+    // Фиксируем message_id до отправки: после рестарта Backend по нему можно
+    // запросить receipt у Runtime и не повторять неидемпотентную операцию.
+    sqlx::query(
+        "update ai_tool_executions
+            set dispatch_message_id = coalesce(dispatch_message_id, $2),
+                attempts = attempts + 1, status = 'running',
+                started_at = coalesce(started_at, now()), updated_at = now()
+          where id = $1 and status <> 'completed'",
+    )
+    .bind(execution_id)
+    .bind(message_id)
+    .execute(&state.db)
+    .await?;
     let (tx, rx) = oneshot::channel();
     state
         .ai
@@ -1103,14 +1117,6 @@ async fn execute_runtime_tool(
         let _ = state.ai.runtime.pending_remove(message_id);
         return Err(error);
     }
-    sqlx::query(
-        "update ai_tool_executions
-            set status = 'running', started_at = now(), updated_at = now()
-          where id = $1 and status <> 'completed'",
-    )
-    .bind(execution_id)
-    .execute(&state.db)
-    .await?;
     task_event(
         state,
         data.task.id,
@@ -1161,6 +1167,10 @@ async fn execute_runtime_tool(
             })
             .execute(&state.db)
             .await?;
+            if let Some(usage) = &outcome.usage {
+                let _ = workspaces::record_usage(&state.db, data.workspace.id, data.node_id, usage)
+                    .await;
+            }
             task_event(
                 state,
                 data.task.id,
@@ -1238,6 +1248,38 @@ async fn execute_runtime_tool(
             })
         }
     }
+}
+
+/// Политика сети для program.run: программа и workspace должны обе разрешать сеть.
+async fn program_policy(
+    state: &AppState,
+    data: &RunData,
+    arguments: &Value,
+) -> ApiResult<(String, i64)> {
+    let program_id = arguments
+        .get("programId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "select network_policy, max_memory_bytes
+           from ai_programs where runtime_node_id = $1 and program_id = $2",
+    )
+    .bind(data.node_id)
+    .bind(program_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (program_network, program_memory) = row.unwrap_or_else(|| ("deny".to_owned(), 0));
+    let network = if program_network == "allow" && data.workspace.network_policy == "allow" {
+        "allow".to_owned()
+    } else {
+        "deny".to_owned()
+    };
+    let memory = if program_memory > 0 {
+        program_memory
+    } else {
+        data.workspace.max_process_memory_bytes
+    };
+    Ok((network, memory))
 }
 
 fn tool_result_text(outcome: &ToolOutcome) -> String {
@@ -1353,7 +1395,12 @@ async fn prepare_tools(
 ) -> ApiResult<Vec<(tools::ToolSpec, tools::ToolPolicyRow)>> {
     let assigned =
         skills::assigned_for_user(&state.db, data.task.owner_id, data.task.workspace_id).await?;
-    tools::allowed_for_task(&state.db, &data.workspace, !assigned.is_empty()).await
+    let mut allowed =
+        tools::allowed_for_task(&state.db, &data.workspace, !assigned.is_empty()).await?;
+    // MCP-tools добавляются только после явного назначения соединения и
+    // включения tool_id в allowed_tools workspace.
+    allowed.extend(mcp::allowed_for_task(&state.db, data.task.owner_id, &data.workspace).await?);
+    Ok(allowed)
 }
 
 async fn agent_system_prompt(state: &AppState, data: &RunData) -> ApiResult<String> {
@@ -1509,19 +1556,99 @@ fn remaining_seconds(deadline: chrono::DateTime<Utc>) -> ApiResult<u64> {
     Ok(remaining as u64)
 }
 
-async fn cancel_runtime_task(state: &AppState, data: &RunData) {
+/// Отправляет Runtime запрос отмены и фиксирует его в БД.
+///
+/// Задача НЕ переводится в `cancelled` здесь: успешная остановка объявляется
+/// только после `task.cancel_ack`/`task.cancelled` с `confirmed=true`.
+pub async fn request_runtime_cancel(state: &Arc<AppState>, task_id: Uuid, node_id: Uuid) {
     let message_id = Uuid::new_v4();
-    let _ = runtime::send_command(
+    let updated = sqlx::query(
+        "update ai_tasks
+            set cancel_requested = true,
+                cancel_status = case when cancel_status = 'confirmed' then cancel_status else 'requested' end,
+                cancel_requested_at = coalesce(cancel_requested_at, now()),
+                cancel_message_id = coalesce(cancel_message_id, $2),
+                stage = 'cancelling',
+                status_text = 'Запрос отмены отправлен; ожидается подтверждение Runtime',
+                updated_at = now()
+          where id = $1 and status in ('queued', 'running', 'waiting_approval')
+            and cancel_status <> 'confirmed'",
+    )
+    .bind(task_id)
+    .bind(message_id)
+    .execute(&state.db)
+    .await;
+    if let Ok(result) = updated {
+        if result.rows_affected() == 0 {
+            return;
+        }
+    }
+    if let Err(error) = runtime::send_command(
         state,
-        data.node_id,
+        node_id,
         message_id,
         kind::TASK_CANCEL,
-        None,
-        Some(data.task.id),
-        json!({ "taskId": data.task.id }),
+        Some(message_id),
+        Some(task_id),
+        json!({ "taskId": task_id, "cancelRequestMessageId": message_id }),
         None,
     )
-    .await;
+    .await
+    {
+        let _ = sqlx::query(
+            "update ai_tasks
+                set status_text = $2, updated_at = now()
+              where id = $1 and cancel_status = 'requested'",
+        )
+        .bind(task_id)
+        .bind(format!(
+            "Запрос отмены ожидает Runtime: {}",
+            error.message.chars().take(300).collect::<String>()
+        ))
+        .execute(&state.db)
+        .await;
+    }
+    // Watchdog: если Runtime не подтвердил остановку, задача завершается
+    // контролируемой ошибкой, а не выдаётся за успешно отменённую.
+    let state = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(75)).await;
+        let cancel_status: Option<String> =
+            sqlx::query_scalar("select cancel_status from ai_tasks where id = $1")
+                .bind(task_id)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
+        if cancel_status.as_deref() != Some("requested") {
+            return;
+        }
+        let _ = sqlx::query(
+            "update ai_tasks
+                set status = 'failed', stage = 'cancel_unconfirmed',
+                    status_text = 'Runtime не подтвердил остановку задачи',
+                    error_code = 'AI_CANCEL_UNCONFIRMED',
+                    error_message = 'Запрос отмены был отправлен, но Runtime не подтвердил остановку. \
+                                     Проверьте Runtime и дочерние процессы вручную.',
+                    cancel_status = 'failed', finished_at = coalesce(finished_at, now()),
+                    updated_at = now()
+              where id = $1 and cancel_status = 'requested'
+                and status in ('queued', 'running', 'waiting_approval')",
+        )
+        .bind(task_id)
+        .execute(&state.db)
+        .await;
+        task_event(
+            &state,
+            task_id,
+            "ai.task.failed",
+            "cancel_unconfirmed",
+            "Runtime не подтвердил остановку задачи",
+            json!({ "errorCode": "AI_CANCEL_UNCONFIRMED" }),
+        )
+        .await;
+        state.ai.clear_cancel(task_id);
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1747,37 +1874,23 @@ pub async fn cancel_task(
     if actor.id == task.owner_id {
         actor.require("ai.tasks.cancel")?;
     }
-    sqlx::query(
-        "update ai_tasks
-            set cancel_requested = true, stage = 'cancelling',
-                status_text = 'Отмена отправлена Runtime', updated_at = now()
-          where id = $1",
-    )
-    .bind(task_id)
-    .execute(&state.db)
-    .await?;
-    state.ai.cancel_token(task_id).cancel();
-    // Команда отмены отправляется здесь же; Runtime завершает HTTP-стрим и
-    // дерево процессов, затем подтверждает task.cancelled.
-    let message_id = Uuid::new_v4();
-    let _ = runtime::send_command(
-        state,
-        task.runtime_node_id,
-        message_id,
-        kind::TASK_CANCEL,
-        None,
-        Some(task_id),
-        json!({ "taskId": task_id }),
-        None,
-    )
-    .await;
-
     if task.status == "waiting_approval" {
+        // Ни один side effect ещё не отправлен Runtime: отмена безопасна локально.
         approvals::expire_stale(&state.db).await;
         sqlx::query(
             "update ai_tool_approvals
                 set decision = 'expired', decided_at = now()
               where task_id = $1 and decision = 'pending'",
+        )
+        .bind(task_id)
+        .execute(&state.db)
+        .await?;
+        sqlx::query(
+            "update ai_tasks
+                set cancel_requested = true, cancel_status = 'confirmed',
+                    cancel_requested_at = now(), cancel_confirmed_at = now(),
+                    updated_at = now()
+              where id = $1",
         )
         .bind(task_id)
         .execute(&state.db)
@@ -1794,6 +1907,9 @@ pub async fn cancel_task(
             Value::Null,
         )
         .await?;
+    } else {
+        state.ai.cancel_token(task_id).cancel();
+        request_runtime_cancel(state, task_id, task.runtime_node_id).await;
     }
 
     record(
@@ -1814,7 +1930,287 @@ pub async fn cancel_task(
         "taskId": task_id,
         "requested": true,
         "status": if task.status == "waiting_approval" { "cancelled" } else { "cancelling" },
+        "cancelStatus": if task.status == "waiting_approval" { "confirmed" } else { "requested" },
+        "message": if task.status == "waiting_approval" {
+            "Задача отменена локально: действие ещё не отправлялось Runtime."
+        } else {
+            "Запрос отмены отправлен. Статус cancelled будет выставлен только после подтверждения Runtime."
+        },
     }))
+}
+
+/// Запускает восстановленные задачи и повторную отмену после старта Backend.
+pub async fn spawn_recovery_tasks(state: Arc<AppState>) -> crate::ai::RecoveryReport {
+    let report = crate::ai::recover_interrupted(&state.db).await;
+    for task_id in &report.resume {
+        let node_id: Option<Uuid> =
+            sqlx::query_scalar("select runtime_node_id from ai_tasks where id = $1")
+                .bind(task_id)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
+        let Some(node_id) = node_id else { continue };
+        if state.ai.runtime.is_online(node_id) {
+            let state = state.clone();
+            let id = *task_id;
+            tokio::spawn(async move {
+                run_task(state, id).await;
+            });
+        } else {
+            tracing::warn!(
+                %task_id,
+                "задача остаётся в очереди до подключения Runtime после рестарта"
+            );
+        }
+    }
+    for (task_id, node_id) in &report.cancel {
+        state.ai.cancel_token(*task_id).cancel();
+        request_runtime_cancel(&state, *task_id, *node_id).await;
+    }
+    // Watchdog для задач, ожидающих receipt: если Runtime так и не подключился,
+    // задача завершается контролируемой ошибкой, а не висит вечно.
+    let watchdog_state = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+        let stuck: Vec<Uuid> = sqlx::query_scalar(
+            "select id from ai_tasks
+              where recovery_state = 'awaiting_receipt' and status = 'running'",
+        )
+        .fetch_all(&watchdog_state.db)
+        .await
+        .unwrap_or_default();
+        for task_id in stuck {
+            let _ = sqlx::query(
+                "update ai_tasks
+                    set status = 'failed', stage = 'recovery_unresolved',
+                        status_text = 'Не удалось сверить выполнение с Runtime',
+                        error_code = 'AI_EXECUTION_UNKNOWN',
+                        error_message = 'Runtime не подтвердил результат незавершённой операции. \
+                                         Повторное выполнение автоматически не запускается.',
+                        finished_at = now(), updated_at = now()
+                  where id = $1 and recovery_state = 'awaiting_receipt'",
+            )
+            .bind(task_id)
+            .execute(&watchdog_state.db)
+            .await;
+            task_event(
+                &watchdog_state,
+                task_id,
+                "ai.task.failed",
+                "recovery_unresolved",
+                "Не удалось сверить выполнение с Runtime",
+                json!({ "errorCode": "AI_EXECUTION_UNKNOWN" }),
+            )
+            .await;
+        }
+    });
+    report
+}
+
+/// Подхватывает задачи, восстановленные после рестарта, когда Runtime снова online.
+pub async fn resume_pending_for_node(state: &Arc<AppState>, node_id: Uuid) {
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "select t.id from ai_tasks t
+          where t.runtime_node_id = $1
+            and t.status in ('queued', 'running')
+            and t.cancel_requested = false
+            and t.recovery_state in ('requeued', 'resumed')
+            and not exists (
+                select 1 from ai_tool_executions e
+                 where e.task_id = t.id
+                   and e.status in ('pending', 'running', 'waiting_approval')
+            )",
+    )
+    .bind(node_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    for task_id in ids {
+        let state = state.clone();
+        tokio::spawn(async move {
+            run_task(state, task_id).await;
+        });
+    }
+}
+
+/// Сверяет незавершённые executions с Runtime после reconnect.
+pub async fn reconcile_node(state: &Arc<AppState>, node_id: Uuid) {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        execution_id: Uuid,
+        task_id: Uuid,
+        message_id: Uuid,
+    }
+    let rows = sqlx::query_as::<_, Row>(
+        "select e.id as execution_id, e.task_id, e.dispatch_message_id as message_id
+           from ai_tool_executions e
+           join ai_tasks t on t.id = e.task_id
+          where e.dispatch_message_id is not null
+            and e.status in ('pending', 'running')
+            and t.runtime_node_id = $1
+            and t.status in ('running', 'queued')
+          order by e.created_at",
+    )
+    .bind(node_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    for row in rows {
+        let state = state.clone();
+        tokio::spawn(async move {
+            reconcile_execution(
+                state.clone(),
+                node_id,
+                row.execution_id,
+                row.task_id,
+                row.message_id,
+            )
+            .await;
+        });
+    }
+}
+
+async fn reconcile_execution(
+    state: Arc<AppState>,
+    node_id: Uuid,
+    execution_id: Uuid,
+    task_id: Uuid,
+    execution_message_id: Uuid,
+) {
+    let command_id = Uuid::new_v4();
+    let (tx, rx) = oneshot::channel();
+    state
+        .ai
+        .runtime
+        .pending_register(command_id, node_id, PendingRequest::Reply(tx));
+    if runtime::send_command(
+        &state,
+        node_id,
+        command_id,
+        kind::EXECUTION_STATUS,
+        Some(command_id),
+        Some(task_id),
+        json!({ "executionMessageId": execution_message_id }),
+        None,
+    )
+    .await
+    .is_err()
+    {
+        let _ = state.ai.runtime.pending_remove(command_id);
+        return;
+    }
+    let result: ExecutionStatusResult =
+        match tokio::time::timeout(std::time::Duration::from_secs(25), rx).await {
+            Ok(Ok(RuntimeReply::ExecutionStatus(result))) => result,
+            _ => {
+                let _ = state.ai.runtime.pending_remove(command_id);
+                return;
+            }
+        };
+    match result.status.as_str() {
+        "completed" => {
+            let outcome = result.outcome.unwrap_or_default();
+            let text = tool_result_text(&outcome);
+            let _ = sqlx::query(
+                "update ai_tool_executions
+                    set status = 'completed', result = $2, result_text = $3, exit_code = $4,
+                        duration_ms = $5, receipt = $6, finished_at = now(), updated_at = now()
+                  where id = $1 and status in ('pending', 'running')",
+            )
+            .bind(execution_id)
+            .bind(&outcome.result)
+            .bind(&text)
+            .bind(outcome.exit_code)
+            .bind(outcome.duration_ms)
+            .bind(json!({ "reconciled": true, "messageId": execution_message_id }))
+            .execute(&state.db)
+            .await;
+            if let Ok(Some(workspace_id)) =
+                sqlx::query_scalar::<_, Uuid>("select workspace_id from ai_tasks where id = $1")
+                    .bind(task_id)
+                    .fetch_optional(&state.db)
+                    .await
+            {
+                if let Some(usage) = &outcome.usage {
+                    let _ = workspaces::record_usage(&state.db, workspace_id, node_id, usage).await;
+                }
+            }
+            let _ = sqlx::query(
+                "update ai_tasks
+                    set recovery_state = null, stage = 'resume',
+                        status_text = 'Результат операции восстановлен по receipt Runtime',
+                        updated_at = now()
+                  where id = $1 and status = 'running'",
+            )
+            .bind(task_id)
+            .execute(&state.db)
+            .await;
+            run_task(state, task_id).await;
+        }
+        "failed" | "cancelled" => {
+            let error = result
+                .error
+                .unwrap_or_else(|| "Runtime сообщил о неуспешном выполнении.".to_owned());
+            let _ = sqlx::query(
+                "update ai_tool_executions
+                    set status = $2, error_code = 'AI_EXECUTION_UNKNOWN',
+                        error_message = $3, finished_at = now(), updated_at = now()
+                  where id = $1 and status in ('pending', 'running')",
+            )
+            .bind(execution_id)
+            .bind(if result.status == "cancelled" {
+                "cancelled"
+            } else {
+                "failed"
+            })
+            .bind(error.chars().take(500).collect::<String>())
+            .execute(&state.db)
+            .await;
+            let _ = finalize(
+                &state,
+                task_id,
+                if result.status == "cancelled" {
+                    "cancelled"
+                } else {
+                    "failed"
+                },
+                "recovered",
+                "Задача завершена по receipt Runtime",
+                Some("AI_EXECUTION_RECOVERED"),
+                Some(&error),
+                None,
+                Value::Null,
+            )
+            .await;
+        }
+        _ => {
+            // unknown/running: side effect нельзя повторять и нельзя объявлять
+            // успешным. Переводим задачу в контролируемую ошибку.
+            let _ = sqlx::query(
+                "update ai_tool_executions
+                    set status = 'failed', error_code = 'AI_EXECUTION_UNKNOWN',
+                        error_message = 'Результат выполнения неизвестен после перезапуска.',
+                        finished_at = now(), updated_at = now()
+                  where id = $1 and status in ('pending', 'running')",
+            )
+            .bind(execution_id)
+            .execute(&state.db)
+            .await;
+            let _ = finalize(
+                &state,
+                task_id,
+                "failed",
+                "recovery_unresolved",
+                "Результат операции неизвестен; повторное выполнение не запускается",
+                Some("AI_EXECUTION_UNKNOWN"),
+                Some("Runtime не содержит receipt для незавершённой операции."),
+                None,
+                Value::Null,
+            )
+            .await;
+        }
+    }
 }
 
 pub async fn task_events(db: &PgPool, task_id: Uuid, limit: i64) -> ApiResult<Vec<Value>> {

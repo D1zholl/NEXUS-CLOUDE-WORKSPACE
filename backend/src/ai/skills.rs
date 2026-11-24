@@ -309,6 +309,16 @@ pub fn parse_archive(bytes: &[u8]) -> ApiResult<ParsedSkill> {
 /// Импорт: новая версия при совпадении slug, иначе новый Skill.
 pub async fn import(state: &AppState, actor: &AuthUser, bytes: &[u8]) -> ApiResult<Value> {
     let parsed = parse_archive(bytes)?;
+    store_parsed(state, actor, parsed, None).await
+}
+
+/// Сохраняет разобранный Skill, создавая новую версию и полный snapshot файлов.
+async fn store_parsed(
+    state: &AppState,
+    actor: &AuthUser,
+    parsed: ParsedSkill,
+    restore_note: Option<i32>,
+) -> ApiResult<Value> {
     let mut tx = state.db.begin().await?;
     let existing: Option<(Uuid, i32)> = sqlx::query_as(
         "select id, version from ai_skills where lower(slug) = lower($1) for update",
@@ -381,18 +391,46 @@ pub async fn import(state: &AppState, actor: &AuthUser, bytes: &[u8]) -> ApiResu
         .execute(&mut *tx)
         .await?;
     }
-    sqlx::query(
-        "insert into ai_skill_versions (skill_id, version, skill_md, checksum, created_by)
-         values ($1, $2, $3, $4, $5)
-         on conflict (skill_id, version) do update set skill_md = excluded.skill_md",
+    let version_id: Uuid = sqlx::query_scalar(
+        "insert into ai_skill_versions
+            (skill_id, version, skill_md, checksum, size_bytes, file_count, files_checksum, created_by)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
+         on conflict (skill_id, version) do update
+            set skill_md = excluded.skill_md, checksum = excluded.checksum,
+                size_bytes = excluded.size_bytes, file_count = excluded.file_count,
+                files_checksum = excluded.files_checksum
+         returning id",
     )
     .bind(skill_id)
     .bind(version)
     .bind(&parsed.skill_md)
     .bind(&parsed.checksum)
+    .bind(parsed.size_bytes)
+    .bind(parsed.files.len() as i32)
+    .bind(&parsed.checksum)
     .bind(actor.id)
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await?;
+    sqlx::query("delete from ai_skill_version_files where version_id = $1")
+        .bind(version_id)
+        .execute(&mut *tx)
+        .await?;
+    for file in &parsed.files {
+        let mut hasher = Sha256::new();
+        hasher.update(&file.content);
+        sqlx::query(
+            "insert into ai_skill_version_files
+                (version_id, path, content, size_bytes, sha256)
+             values ($1, $2, $3, $4, $5)",
+        )
+        .bind(version_id)
+        .bind(&file.path)
+        .bind(&file.content)
+        .bind(file.content.len() as i64)
+        .bind(hex::encode(hasher.finalize()))
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
 
     record(
@@ -410,6 +448,7 @@ pub async fn import(state: &AppState, actor: &AuthUser, bytes: &[u8]) -> ApiResu
                 "version": version,
                 "checksum": parsed.checksum,
                 "files": parsed.files.len(),
+                "restoredFrom": restore_note,
             }),
         },
     )
@@ -420,7 +459,161 @@ pub async fn import(state: &AppState, actor: &AuthUser, bytes: &[u8]) -> ApiResu
         "skill": row.summary(),
         "version": version,
         "created": existing.is_none(),
+        "restoredFrom": restore_note,
     }))
+}
+
+/// История версий Skill.
+pub async fn versions(db: &PgPool, skill_id: Uuid) -> ApiResult<Vec<Value>> {
+    let _ = load(db, skill_id).await?;
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        version: i32,
+        checksum: String,
+        size_bytes: i64,
+        file_count: i32,
+        files_checksum: String,
+        created_by: Option<Uuid>,
+        created_at: chrono::DateTime<chrono::Utc>,
+    }
+    let rows = sqlx::query_as::<_, Row>(
+        "select version, checksum, size_bytes, file_count, files_checksum,
+                created_by, created_at
+           from ai_skill_versions where skill_id = $1 order by version desc",
+    )
+    .bind(skill_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            json!({
+                "version": row.version,
+                "checksum": row.checksum,
+                "sizeBytes": row.size_bytes,
+                "fileCount": row.file_count,
+                "filesChecksum": row.files_checksum,
+                "createdBy": row.created_by,
+                "createdAt": row.created_at,
+            })
+        })
+        .collect())
+}
+
+/// Полный snapshot файлов указанной версии (для аудита и восстановления).
+pub async fn version_files(db: &PgPool, skill_id: Uuid, version: i32) -> ApiResult<Vec<Value>> {
+    let version_id: Option<Uuid> =
+        sqlx::query_scalar("select id from ai_skill_versions where skill_id = $1 and version = $2")
+            .bind(skill_id)
+            .bind(version)
+            .fetch_optional(db)
+            .await?;
+    let Some(version_id) = version_id else {
+        return Err(ApiError::not_found("Версия Skill не найдена."));
+    };
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        path: String,
+        content: Vec<u8>,
+        size_bytes: i64,
+        sha256: String,
+    }
+    let rows = sqlx::query_as::<_, Row>(
+        "select path, content, size_bytes, sha256
+           from ai_skill_version_files where version_id = $1 order by path",
+    )
+    .bind(version_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            use base64::Engine as _;
+            json!({
+                "path": row.path,
+                "sizeBytes": row.size_bytes,
+                "sha256": row.sha256,
+                "content": String::from_utf8(row.content.clone()).ok(),
+                "contentBase64": base64::engine::general_purpose::STANDARD.encode(&row.content),
+            })
+        })
+        .collect())
+}
+
+/// Восстанавливает версию как новую версию (история не перезаписывается).
+pub async fn restore(
+    state: &AppState,
+    actor: &AuthUser,
+    skill_id: Uuid,
+    version: i32,
+) -> ApiResult<Value> {
+    let skill = load(&state.db, skill_id).await?;
+    let version_id: Option<Uuid> =
+        sqlx::query_scalar("select id from ai_skill_versions where skill_id = $1 and version = $2")
+            .bind(skill_id)
+            .bind(version)
+            .fetch_optional(&state.db)
+            .await?;
+    let Some(version_id) = version_id else {
+        return Err(ApiError::not_found("Версия Skill не найдена."));
+    };
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        path: String,
+        content: Vec<u8>,
+    }
+    let rows = sqlx::query_as::<_, Row>(
+        "select path, content from ai_skill_version_files
+          where version_id = $1 order by path",
+    )
+    .bind(version_id)
+    .fetch_all(&state.db)
+    .await?;
+    if rows.is_empty() {
+        return Err(ApiError::conflict(
+            "AI_SKILL_VERSION_INCOMPLETE",
+            "Snapshot версии не содержит файлов. Восстановление невозможно.",
+        ));
+    }
+    let mut files = Vec::new();
+    let mut skill_md = String::new();
+    let mut size_bytes = 0i64;
+    for row in rows {
+        if row.path == "SKILL.md" {
+            skill_md = String::from_utf8(row.content.clone())
+                .map_err(|_| ApiError::validation("SKILL.md версии повреждён."))?;
+        }
+        size_bytes += row.content.len() as i64;
+        files.push(SkillFile {
+            path: row.path,
+            content: row.content,
+        });
+    }
+    if skill_md.trim().is_empty() {
+        return Err(ApiError::conflict(
+            "AI_SKILL_VERSION_INCOMPLETE",
+            "Версия не содержит SKILL.md.",
+        ));
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut hasher = Sha256::new();
+    for file in &files {
+        hasher.update(file.path.as_bytes());
+        hasher.update([0]);
+        hasher.update(&file.content);
+    }
+    let checksum = hex::encode(hasher.finalize());
+    let parsed = ParsedSkill {
+        slug: skill.slug,
+        name: skill.name,
+        description: skill.description,
+        dependencies: skill.dependencies,
+        skill_md,
+        files,
+        checksum,
+        size_bytes,
+    };
+    store_parsed(state, actor, parsed, Some(version)).await
 }
 
 pub async fn load(db: &PgPool, id: Uuid) -> ApiResult<SkillRow> {

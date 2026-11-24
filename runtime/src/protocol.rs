@@ -34,7 +34,19 @@ pub mod kind {
     pub const TOOL_FAILED: &str = "tool.failed";
 
     pub const TASK_CANCEL: &str = "task.cancel";
+    pub const TASK_CANCEL_ACK: &str = "task.cancel_ack";
     pub const TASK_CANCELLED: &str = "task.cancelled";
+
+    pub const WORKSPACE_USAGE: &str = "workspace.usage";
+    pub const WORKSPACE_USAGE_RESULT: &str = "workspace.usage_result";
+
+    pub const EXECUTION_STATUS: &str = "execution.status";
+    pub const EXECUTION_STATUS_RESULT: &str = "execution.status_result";
+
+    pub const MCP_CONFIGURE: &str = "mcp.configure";
+    pub const MCP_CONFIGURE_ACK: &str = "mcp.configure_ack";
+    pub const MCP_DISCOVER: &str = "mcp.discover";
+    pub const MCP_TOOLS: &str = "mcp.tools";
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -96,6 +108,19 @@ pub struct RuntimeCapabilities {
     pub tools: Vec<ToolDescriptor>,
     #[serde(default)]
     pub programs: Vec<ProgramDescriptor>,
+    #[serde(default)]
+    pub network_isolation: NetworkIsolationStatus,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkIsolationStatus {
+    #[serde(default)]
+    pub supported: bool,
+    #[serde(default)]
+    pub elevated: bool,
+    #[serde(default)]
+    pub detail: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -138,6 +163,12 @@ pub struct ProgramDescriptor {
     pub available: bool,
     pub risk: String,
     pub allowed_args: Value,
+    #[serde(default = "default_network_policy")]
+    pub network_policy: String,
+}
+
+fn default_network_policy() -> String {
+    "deny".to_owned()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -269,6 +300,14 @@ pub struct ToolExecuteRequest {
     pub workspace_max_files: i64,
     #[serde(default)]
     pub workspace_max_file_bytes: i64,
+    #[serde(default)]
+    pub workspace_usage_bytes: i64,
+    #[serde(default)]
+    pub workspace_usage_files: i64,
+    #[serde(default = "default_network_policy")]
+    pub network_policy: String,
+    #[serde(default)]
+    pub max_memory_bytes: i64,
 }
 
 fn default_version() -> i32 {
@@ -280,9 +319,73 @@ fn default_output() -> i64 {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkspaceUsage {
+    #[serde(default)]
+    pub bytes: i64,
+    #[serde(default)]
+    pub files: i64,
+    #[serde(default)]
+    pub checked_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolOutcome {
     pub result: Value,
     pub result_text: Option<String>,
     pub exit_code: Option<i32>,
     pub duration_ms: i64,
+    #[serde(default)]
+    pub usage: Option<WorkspaceUsage>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConnectionConfig {
+    pub id: Uuid,
+    pub name: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub secret: Option<String>,
+    #[serde(default)]
+    pub allow_private_network: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDiscoveredTool {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub input_schema: Value,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDiscoveryResult {
+    pub connection_id: Uuid,
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub tools: Vec<McpDiscoveredTool>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub server_name: String,
+    #[serde(default)]
+    pub protocol_version: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionStatusResult {
+    pub message_id: Uuid,
+    pub status: String,
+    #[serde(default)]
+    pub outcome: Option<ToolOutcome>,
+    #[serde(default)]
+    pub error: Option<String>,
 }

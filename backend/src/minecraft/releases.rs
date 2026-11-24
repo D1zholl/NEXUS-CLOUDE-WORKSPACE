@@ -290,7 +290,7 @@ pub async fn publish(
         // текущий релиз остался опубликованным, восстанавливаем публикацию.
         if build.status != "published" || build.current_release_id != Some(release_id) {
             let mut tx = db.begin().await?;
-            mark_build_published(&mut *tx, build_id, release_id, &release.version).await?;
+            mark_build_published(&mut tx, build_id, release_id, &release.version).await?;
             tx.commit().await?;
         }
         return load(db, build_id, release_id).await;
@@ -346,7 +346,7 @@ pub async fn publish(
     .bind(launcher_manifest::SCHEMA_VERSION)
     .execute(&mut *tx)
     .await?;
-    mark_build_published(&mut *tx, build_id, release_id, &release.version).await?;
+    mark_build_published(&mut tx, build_id, release_id, &release.version).await?;
     sqlx::query(
         "insert into minecraft_release_history
            (build_id, release_id, event, actor_id, actor_username, details)
@@ -393,7 +393,7 @@ pub async fn set_current(
     let mut tx = db.begin().await?;
     // Активация опубликованного релиза всегда возвращает сборку в каталог:
     // до этого сборка могла остаться в черновиках после архивирования релиза.
-    mark_build_published(&mut *tx, build_id, release_id, &release.version).await?;
+    mark_build_published(&mut tx, build_id, release_id, &release.version).await?;
     sqlx::query(
         "insert into minecraft_release_history
            (build_id, release_id, event, actor_id, actor_username, details)
@@ -452,7 +452,7 @@ pub async fn set_status(
     // оставаться «опубликованной» со ссылкой на скрытый релиз. Выбираем
     // следующий опубликованный релиз либо возвращаем сборку в черновики.
     if release.is_current {
-        sync_build_publication(&mut *tx, build_id).await?;
+        sync_build_publication(&mut tx, build_id).await?;
     }
     sqlx::query(
         "insert into minecraft_release_history

@@ -23,6 +23,14 @@
   безопасные файловые инструменты, зарегистрированные программы, лимиты,
   идемпотентность и отмена. Install/update/uninstall PowerShell scripts и
   `runtime check`.
+- **Phase 9 — Production hardening.** MCP registry/discovery/assignments,
+  автоматическая сетевая изоляция программ (Windows Firewall, fail-closed),
+  реальный usage bytes/files, подтверждение отмены Runtime, полные snapshots
+  версий Skills + restore, quota pre-check для patch/program, восстановление
+  задач после рестарта с receipt reconciliation, HTTP Idempotency-Key и
+  sequence/timestamp/replay-защита, миграция `0020_ai_hardening.sql`, MCP UI,
+  automated runtime stand и two-machine check script. Полный аудит:
+  `docs/AI_PRODUCTION_AUDIT.md`.
 
 - **Проверка каталога перед регистрацией тома.** Сервер сканирует
   `.nexus/objects`, `staging` и `quarantine` выбранного каталога и показывает

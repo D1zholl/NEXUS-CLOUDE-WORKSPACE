@@ -746,14 +746,26 @@ PDF.js работает: worker `pdf.worker.min.mjs` собирается Vite �
 ## AI Workspace и NEXUS AI Runtime
 
 - Chat и Agent используют разные контракты: Chat не передаёт `tools`; Agent
-  получает только серверный allowlist.
+  получает только серверный allowlist, а MCP-tools дополнительно требуют
+  assignment и повторную проверку перед dispatch.
 - Runtime аутентифицируется отдельным одноразовым enrollment и device token
-  (SHA-256 hash в БД), не cookie-сессией.
+  (SHA-256 hash в БД), не cookie-сессией; token отзывается/ротируется.
 - Approval одноразовый, с TTL и SHA-256 args hash; аргументы после approve
-  подменить нельзя.
+  подменить нельзя. Approve/reject идемпотентны по `Idempotency-Key`.
 - Workspace paths проверяются Runtime по `allowed_roots`, canonical containment
   и reparse points непосредственно перед операцией.
-- API key провайдера шифруется AES-256-GCM, device token хранится как hash.
-- Prompt injection из файлов/Skills/tool output не расширяет политику.
-- MCP не реализован; сетевая изоляция программ ограничена allowlist. Полный
-  перечень ограничений: [`AI_WORKSPACE.md`](AI_WORKSPACE.md#12-ограничения-текущей-версии).
+- API key провайдера и MCP secret шифруются AES-256-GCM; device token хранится
+  как hash; секреты не попадают в UI/audit/logs/outbox.
+- Prompt injection из файлов/Skills/tool output/MCP не расширяет политику.
+- MCP: соединения выключены по умолчанию, endpoint проверяется на SSRF на
+  backend и повторно на Runtime (loopback/private/link-local/metadata требуют
+  явного `allowPrivateNetwork`), redirects запрещены, результаты недоверенные.
+- Сеть программ: `network_policy='deny'` по умолчанию, Windows Firewall
+  outbound block, fail-closed без прав администратора, Job Object с
+  kill-on-close и лимитом памяти.
+- Cancel: задача не считается отменённой до `task.cancelled{confirmed=true}`;
+  при отсутствии подтверждения — `AI_CANCEL_UNCONFIRMED`, а не ложный успех.
+- Replay: sequence/timestamp/messageId, receipts, уникальные dispatch/message
+  id, HTTP Idempotency-Key.
+- Полный перечень ограничений:
+  [`AI_WORKSPACE.md`](AI_WORKSPACE.md#13-ограничения-текущей-версии).

@@ -4,7 +4,8 @@
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | модули, границы, backend/frontend, jobs, realtime |
 | [API.md](API.md) | HTTP API, WebSocket, коды ошибок |
-| [AI_WORKSPACE.md](AI_WORKSPACE.md) | AI Chat, Agent, Runtime, протокол, approvals, Skills, ограничения |
+| [AI_WORKSPACE.md](AI_WORKSPACE.md) | AI Chat, Agent, Runtime, протокол, MCP, approvals, Skills, ограничения |
+| [AI_PRODUCTION_AUDIT.md](AI_PRODUCTION_AUDIT.md) | Phase 9 аудит, исправления, стенд, оставшиеся риски |
 | [SECURITY.md](SECURITY.md) | threat model, сессии, CSRF, RBAC, секреты |
 | [ADMIN_GUIDE.md](ADMIN_GUIDE.md) | System Management, пользователи, модули, AI Management |
 | [USER_GUIDE.md](USER_GUIDE.md) | рабочие пространства, Cloud Storage, AI Workspace |

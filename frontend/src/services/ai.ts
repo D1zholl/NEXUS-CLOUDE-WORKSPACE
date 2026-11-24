@@ -19,6 +19,36 @@ export interface AiProvider {
   enabled?: boolean;
 }
 
+export interface AiMcpConnection {
+  id: string;
+  name: string;
+  runtimeNodeId: string;
+  transport: string;
+  endpoint: string;
+  enabled: boolean;
+  allowPrivateNetwork: boolean;
+  status: 'unknown' | 'ok' | 'error' | 'disabled' | string;
+  lastError?: string | null;
+  lastDiscoveredAt?: string | null;
+  discoveredCount: number;
+  hasSecret: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiMcpTool {
+  id: string;
+  connectionId: string;
+  name: string;
+  toolId: string;
+  modelName: string;
+  description: string;
+  inputSchema?: Record<string, unknown>;
+  risk: string;
+  enabled: boolean;
+  discoveredAt: string;
+}
+
 export interface AiConversation {
   id: string;
   title: string;
@@ -76,6 +106,9 @@ export interface AiTask {
   toolCallsCount: number;
   timeoutSeconds: number;
   cancelRequested: boolean;
+  cancelStatus?: 'none' | 'requested' | 'confirmed' | 'failed';
+  cancelRequestedAt?: string | null;
+  cancelConfirmedAt?: string | null;
   startedAt: string | null;
   finishedAt: string | null;
   errorCode: string | null;
@@ -327,9 +360,9 @@ export const aiApi = {
   ) => request<AiConversation>(`${base}/conversations/${id}`, { method: 'PATCH', body }),
   deleteConversation: (id: string) =>
     request<{ deleted: boolean }>(`${base}/conversations/${id}`, { method: 'DELETE' }),
-  messages: (id: string, page = 1, perPage = 100) =>
+  messages: (id: string, page = 1, perPage = 100, tail = true) =>
     request<Page<AiMessage>>(
-      `${base}/conversations/${id}/messages${queryString({ page, perPage })}`,
+      `${base}/conversations/${id}/messages${queryString({ page, perPage, tail: tail ? 1 : undefined })}`,
     ),
   sendMessage: (
     id: string,
@@ -397,6 +430,8 @@ export const aiApi = {
   workspaces: () => request<{ items: AiWorkspace[] }>(`${base}/workspaces`),
   workspace: (id: string) => request<AiWorkspace>(`${base}/workspaces/${id}`),
   workspaceUsage: (id: string) => request<AiUsage>(`${base}/workspaces/${id}/usage`),
+  refreshWorkspaceUsage: (id: string) =>
+    request<AiUsage>(`${base}/workspaces/${id}/usage/refresh`, { method: 'POST', body: {} }),
   skills: (workspaceId?: string) =>
     request<{ items: AiSkill[] }>(`${base}/skills${queryString({ workspaceId })}`),
   skill: (id: string) => request<AiSkill>(`${base}/skills/${id}`),
@@ -442,6 +477,7 @@ export const aiApi = {
       method: 'POST',
       body: {},
     }),
+  adminProviders: () => request<{ items: AiProvider[] }>(`${base}/admin/providers`),
   createProvider: (body: Record<string, unknown>) =>
     request<AiProvider>(`${base}/admin/providers`, { method: 'POST', body }),
   updateProvider: (id: string, body: Record<string, unknown>) =>
@@ -458,6 +494,31 @@ export const aiApi = {
   providerStatus: (id: string) =>
     request<Record<string, unknown>>(`${base}/admin/providers/${id}/status`),
   allWorkspaces: () => request<{ items: AiWorkspace[] }>(`${base}/admin/workspaces`),
+  mcpConnections: () =>
+    request<{ items: AiMcpConnection[] }>(`${base}/admin/mcp-connections`),
+  createMcpConnection: (body: Record<string, unknown>) =>
+    request<AiMcpConnection>(`${base}/admin/mcp-connections`, { method: 'POST', body }),
+  updateMcpConnection: (id: string, body: Record<string, unknown>) =>
+    request<AiMcpConnection>(`${base}/admin/mcp-connections/${id}`, {
+      method: 'PATCH',
+      body,
+    }),
+  deleteMcpConnection: (id: string) =>
+    request<Record<string, unknown>>(`${base}/admin/mcp-connections/${id}`, {
+      method: 'DELETE',
+    }),
+  discoverMcp: (id: string) =>
+    request<{ connection: AiMcpConnection; tools: AiMcpTool[]; error?: string | null }>(
+      `${base}/admin/mcp-connections/${id}/discover`,
+      { method: 'POST', body: {} },
+    ),
+  mcpTools: (id: string) =>
+    request<{ items: AiMcpTool[] }>(`${base}/admin/mcp-connections/${id}/tools`),
+  assignMcp: (id: string, body: Record<string, unknown>) =>
+    request<Record<string, unknown>>(`${base}/admin/mcp-connections/${id}/assignments`, {
+      method: 'POST',
+      body,
+    }),
   createWorkspace: (body: Record<string, unknown>) =>
     request<AiWorkspace>(`${base}/admin/workspaces`, { method: 'POST', body }),
   updateWorkspace: (id: string, body: Record<string, unknown>) =>

@@ -69,6 +69,16 @@ impl Api {
         path: &str,
         body: Option<Value>,
     ) -> Result<(u16, Value), String> {
+        self.call_with_headers(method, path, body, &[]).await
+    }
+
+    async fn call_with_headers(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        extra_headers: &[(&str, &str)],
+    ) -> Result<(u16, Value), String> {
         let mut request = self
             .client
             .request(
@@ -82,12 +92,15 @@ impl Api {
         if let Some(csrf) = &self.csrf {
             request = request.header("X-CSRF-Token", csrf);
         }
+        for (name, value) in extra_headers {
+            request = request.header(*name, *value);
+        }
         if let Some(body) = body {
             request = request.json(&body);
         }
         let response = request.send().await.map_err(|error| error.to_string())?;
         let status = response.status().as_u16();
-        let payload: Value = response.json().await.unwrap_or_else(|_| Value::Null);
+        let payload: Value = response.json().await.unwrap_or(Value::Null);
         Ok((status, payload))
     }
 
@@ -858,7 +871,7 @@ async fn destructive_tool_requires_approval_and_is_bound_to_arguments() {
         .await;
     let executions = executions["items"].as_array().unwrap();
     assert_eq!(executions.len(), 1);
-    assert_eq!(executions[0]["approvalId"].as_str().is_some(), true);
+    assert!(executions[0]["approvalId"].as_str().is_some());
 
     server.abort();
 }
@@ -1159,5 +1172,530 @@ async fn user_cannot_read_another_users_conversation() {
         .unwrap();
     assert_eq!(status, 404);
 
+    server.abort();
+}
+
+#[tokio::test]
+async fn mcp_registry_discovers_tools_and_agent_executes_them() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin_id = env.create_user("mcpadmin", "SecretPass1!").await;
+    api.login("mcpadmin", "SecretPass1!").await.unwrap();
+    let (mut runtime, node_id) = setup_runtime(&env, &api).await;
+    setup_provider(&api, node_id).await;
+
+    let connection = api
+        .post(
+            "/api/v1/ai/admin/mcp-connections",
+            json!({
+                "name": "Local MCP",
+                "runtimeNodeId": node_id,
+                "endpoint": "http://127.0.0.1:3999/mcp",
+                "secret": "mcp-super-secret",
+                "enabled": true,
+                "allowPrivateNetwork": true
+            }),
+        )
+        .await;
+    let connection_id = connection["id"].as_str().unwrap().to_owned();
+
+    let discover_path = format!("/api/v1/ai/admin/mcp-connections/{connection_id}/discover");
+    let discover = api.post(&discover_path, json!({}));
+    let serve = async {
+        let command = runtime
+            .wait_for("mcp.discover", Duration::from_secs(10))
+            .await;
+        runtime
+            .send(
+                "mcp.tools",
+                Some(command.message_id),
+                None,
+                json!({
+                    "connectionId": connection_id,
+                    "ok": true,
+                    "serverName": "test-server",
+                    "protocolVersion": "2024-11-05",
+                    "tools": [{
+                        "name": "echo_text",
+                        "description": "Echo text",
+                        "inputSchema": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": { "text": { "type": "string" } },
+                            "required": ["text"]
+                        }
+                    }]
+                }),
+            )
+            .await;
+    };
+    let (discovered, ()) = tokio::join!(discover, serve);
+    assert_eq!(discovered["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(discovered["connection"]["status"], "ok");
+
+    let stored: String = sqlx::query_scalar(
+        "select coalesce(string_agg(payload::text, ' '), '') from ai_runtime_commands
+          where kind = 'mcp.configure'",
+    )
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert!(!stored.contains("mcp-super-secret"));
+
+    let (tool_row_id, tool_id, model_name): (Uuid, String, String) =
+        sqlx::query_as("select id, tool_id, model_name from ai_mcp_tools where connection_id = $1")
+            .bind(Uuid::parse_str(&connection_id).unwrap())
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+    // Для проверки самого цикла выполнения отключаем approval у этого tool;
+    // approval-политика MCP отдельно проверяется при discovery.
+    api.call(
+        "PATCH",
+        &format!("/api/v1/ai/admin/mcp-tools/{tool_row_id}"),
+        Some(json!({ "approvalPolicy": "never", "risk": "low" })),
+    )
+    .await
+    .unwrap();
+
+    api.post(
+        &format!("/api/v1/ai/admin/mcp-connections/{connection_id}/assignments"),
+        json!({ "scope": "user", "userId": admin_id }),
+    )
+    .await;
+
+    let workspace_id = setup_workspace(&env, &api, node_id, admin_id, vec![tool_id.as_str()]).await;
+
+    let conversation = api
+        .post(
+            "/api/v1/ai/conversations",
+            json!({
+                "mode": "agent",
+                "model": "test-model",
+                "workspaceId": workspace_id
+            }),
+        )
+        .await;
+    let conversation_id = Uuid::parse_str(conversation["id"].as_str().unwrap()).unwrap();
+    let sent = api
+        .post(
+            &format!("/api/v1/ai/conversations/{conversation_id}/messages"),
+            json!({ "content": "Вызови MCP echo" }),
+        )
+        .await;
+    let task_id = Uuid::parse_str(sent["task"]["id"].as_str().unwrap()).unwrap();
+
+    let command = runtime
+        .wait_for("provider.chat.start", Duration::from_secs(10))
+        .await;
+    let tools = command.payload["tools"].as_array().unwrap();
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == model_name)
+    );
+    runtime
+        .completed_with_tool(
+            &command,
+            "call_mcp_1",
+            &model_name,
+            json!({ "text": "hello" }),
+        )
+        .await;
+    let tool_command = runtime
+        .wait_for("tool.execute", Duration::from_secs(10))
+        .await;
+    assert_eq!(tool_command.payload["toolId"], tool_id);
+    runtime
+        .send(
+            "tool.completed",
+            Some(tool_command.message_id),
+            Some(task_id),
+            json!({
+                "result": { "content": [{ "type": "text", "text": "hello" }] },
+                "resultText": "hello",
+                "durationMs": 1
+            }),
+        )
+        .await;
+    let next = runtime
+        .wait_for("provider.chat.start", Duration::from_secs(10))
+        .await;
+    runtime.completed(&next, "MCP tool выполнен").await;
+    wait_task(&api, task_id, "completed").await;
+    let executions = api
+        .get(&format!("/api/v1/ai/tasks/{task_id}/executions"))
+        .await;
+    assert_eq!(executions["items"][0]["toolId"], tool_id);
+    server.abort();
+}
+
+#[tokio::test]
+async fn workspace_usage_is_reported_by_runtime() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin_id = env.create_user("usageadmin", "SecretPass1!").await;
+    api.login("usageadmin", "SecretPass1!").await.unwrap();
+    let (mut runtime, node_id) = setup_runtime(&env, &api).await;
+    setup_provider(&api, node_id).await;
+    let workspace_id = setup_workspace(&env, &api, node_id, admin_id, vec!["fs.read"]).await;
+
+    let refresh_path = format!("/api/v1/ai/workspaces/{workspace_id}/usage/refresh");
+    let refresh = api.post(&refresh_path, json!({}));
+    let serve = async {
+        let command = runtime
+            .wait_for("workspace.usage", Duration::from_secs(10))
+            .await;
+        runtime
+            .send(
+                "workspace.usage_result",
+                Some(command.message_id),
+                None,
+                json!({
+                    "workspaceId": workspace_id,
+                    "bytes": 4096,
+                    "files": 3,
+                    "checkedAt": chrono::Utc::now(),
+                    "error": null
+                }),
+            )
+            .await;
+    };
+    let (usage, ()) = tokio::join!(refresh, serve);
+    assert_eq!(usage["usedBytes"], 4096);
+    assert_eq!(usage["usedFiles"], 3);
+    assert_eq!(usage["source"], "runtime");
+    let stored: (i64, i64) =
+        sqlx::query_as("select usage_bytes, usage_files from ai_workspaces where id = $1")
+            .bind(workspace_id)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, (4096, 3));
+    server.abort();
+}
+
+#[tokio::test]
+async fn task_cancel_is_not_successful_without_runtime_confirmation() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin_id = env.create_user("canceladmin", "SecretPass1!").await;
+    api.login("canceladmin", "SecretPass1!").await.unwrap();
+    let (mut runtime, node_id) = setup_runtime(&env, &api).await;
+    setup_provider(&api, node_id).await;
+    let workspace_id = setup_workspace(&env, &api, node_id, admin_id, vec!["fs.read"]).await;
+    let conversation = api
+        .post(
+            "/api/v1/ai/conversations",
+            json!({
+                "mode": "agent",
+                "model": "test-model",
+                "workspaceId": workspace_id
+            }),
+        )
+        .await;
+    let conversation_id = Uuid::parse_str(conversation["id"].as_str().unwrap()).unwrap();
+    let sent = api
+        .post(
+            &format!("/api/v1/ai/conversations/{conversation_id}/messages"),
+            json!({ "content": "Долгая задача" }),
+        )
+        .await;
+    let task_id = Uuid::parse_str(sent["task"]["id"].as_str().unwrap()).unwrap();
+    let _provider = runtime
+        .wait_for("provider.chat.start", Duration::from_secs(10))
+        .await;
+
+    let cancel = api
+        .post(&format!("/api/v1/ai/tasks/{task_id}/cancel"), json!({}))
+        .await;
+    assert_eq!(cancel["requested"], true);
+    let cancel_command = runtime
+        .wait_for("task.cancel", Duration::from_secs(10))
+        .await;
+    let cancel_request = cancel_command
+        .payload
+        .get("cancelRequestMessageId")
+        .and_then(|value| value.as_str())
+        .unwrap()
+        .to_owned();
+
+    let current = api.get(&format!("/api/v1/ai/tasks/{task_id}")).await;
+    assert_ne!(current["status"], "cancelled");
+    assert_eq!(current["cancelStatus"], "requested");
+
+    runtime
+        .send(
+            "task.cancel_ack",
+            Some(cancel_command.message_id),
+            Some(task_id),
+            json!({
+                "cancelRequestMessageId": cancel_request,
+                "accepted": true,
+                "activeExecutions": 1
+            }),
+        )
+        .await;
+    runtime
+        .send(
+            "task.cancelled",
+            Some(cancel_command.message_id),
+            Some(task_id),
+            json!({
+                "taskId": task_id,
+                "confirmed": true,
+                "cancelRequestMessageId": cancel_request,
+                "activeExecutions": 0,
+                "terminatedProcesses": 1,
+                "reason": "test"
+            }),
+        )
+        .await;
+    let task = wait_task(&api, task_id, "cancelled").await;
+    assert_eq!(task["cancelStatus"], "confirmed");
+    server.abort();
+}
+
+#[tokio::test]
+async fn send_message_honours_idempotency_key() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    env.create_user("idemadmin", "SecretPass1!").await;
+    api.login("idemadmin", "SecretPass1!").await.unwrap();
+    let (mut runtime, node_id) = setup_runtime(&env, &api).await;
+    setup_provider(&api, node_id).await;
+    let conversation = api
+        .post(
+            "/api/v1/ai/conversations",
+            json!({ "mode": "chat", "model": "test-model" }),
+        )
+        .await;
+    let conversation_id = Uuid::parse_str(conversation["id"].as_str().unwrap()).unwrap();
+    let path = format!("/api/v1/ai/conversations/{conversation_id}/messages");
+    let body = json!({ "content": "Один и тот же запрос" });
+    let (status1, first) = api
+        .call_with_headers(
+            "POST",
+            &path,
+            Some(body.clone()),
+            &[("Idempotency-Key", "chat-retry-1")],
+        )
+        .await
+        .unwrap();
+    assert_eq!(status1, 200, "{first}");
+    let command = runtime
+        .wait_for("provider.chat.start", Duration::from_secs(10))
+        .await;
+    runtime.completed(&command, "ответ").await;
+    wait_message(&api, conversation_id, "completed").await;
+    let (status2, replay) = api
+        .call_with_headers(
+            "POST",
+            &path,
+            Some(body),
+            &[("Idempotency-Key", "chat-retry-1")],
+        )
+        .await
+        .unwrap();
+    assert_eq!(status2, 200);
+    assert_eq!(replay["data"], first["data"]);
+    let count: i64 = sqlx::query_scalar(
+        "select count(*) from ai_messages where conversation_id = $1 and role = 'user'",
+    )
+    .bind(conversation_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        count, 1,
+        "повтор с Idempotency-Key не должен создавать сообщение"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn skill_versions_keep_full_file_snapshots_and_can_be_restored() {
+    use std::io::Write;
+
+    fn zip_skill(reference: &str, extra: &str) -> Vec<u8> {
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buffer);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("versioned-skill/SKILL.md", options).unwrap();
+            zip.write_all(
+                b"---\nname: Versioned Skill\ndescription: v skill\n---\n# Versioned Skill\n",
+            )
+            .unwrap();
+            zip.start_file("versioned-skill/references/info.md", options)
+                .unwrap();
+            zip.write_all(reference.as_bytes()).unwrap();
+            zip.start_file("versioned-skill/assets/data.txt", options)
+                .unwrap();
+            zip.write_all(extra.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        buffer.into_inner()
+    }
+
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    env.create_user("veradmin", "SecretPass1!").await;
+    api.login("veradmin", "SecretPass1!").await.unwrap();
+
+    let (status, payload) = api
+        .post_multipart(
+            "/api/v1/ai/admin/skills/import",
+            "v1.zip",
+            zip_skill("old reference", "old asset"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status, 200, "{payload}");
+    let skill_id = payload["data"]["skill"]["id"].as_str().unwrap().to_owned();
+    let (status, payload) = api
+        .post_multipart(
+            "/api/v1/ai/admin/skills/import",
+            "v2.zip",
+            zip_skill("new reference", "new asset"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(payload["data"]["version"], 2);
+
+    let versions = api
+        .get(&format!("/api/v1/ai/admin/skills/{skill_id}/versions"))
+        .await;
+    let items = versions["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["fileCount"], 3);
+    let v1 = api
+        .get(&format!("/api/v1/ai/admin/skills/{skill_id}/versions/1"))
+        .await;
+    let files = v1["files"].as_array().unwrap();
+    let reference = files
+        .iter()
+        .find(|file| file["path"] == "references/info.md")
+        .unwrap();
+    assert_eq!(reference["content"], "old reference");
+
+    let restored = api
+        .post(
+            &format!("/api/v1/ai/admin/skills/{skill_id}/versions/1/restore"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(restored["version"], 3);
+    let v3 = api
+        .get(&format!("/api/v1/ai/admin/skills/{skill_id}/versions/3"))
+        .await;
+    let content = v3["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["path"] == "references/info.md")
+        .unwrap()["content"]
+        .clone();
+    assert_eq!(content, "old reference");
+    server.abort();
+}
+
+#[tokio::test]
+async fn recovery_requeues_safe_tasks_and_keeps_pending_receipts() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin_id = env.create_user("recoveradmin", "SecretPass1!").await;
+    api.login("recoveradmin", "SecretPass1!").await.unwrap();
+    let (runtime, node_id) = setup_runtime(&env, &api).await;
+    let provider_id = setup_provider(&api, node_id).await;
+    let workspace_id = setup_workspace(&env, &api, node_id, admin_id, vec!["fs.read"]).await;
+    let conversation = api
+        .post(
+            "/api/v1/ai/conversations",
+            json!({
+                "mode": "agent",
+                "model": "test-model",
+                "workspaceId": workspace_id
+            }),
+        )
+        .await;
+    let conversation_id = Uuid::parse_str(conversation["id"].as_str().unwrap()).unwrap();
+    let context = json!({ "messages": [], "pending": null });
+
+    let queued_id: Uuid = sqlx::query_scalar(
+        "insert into ai_tasks
+            (conversation_id, owner_id, runtime_node_id, provider_id, model, workspace_id,
+             status, stage, context)
+         values ($1, $2, $3, $4, 'test-model', $5, 'queued', 'queued', $6)
+         returning id",
+    )
+    .bind(conversation_id)
+    .bind(admin_id)
+    .bind(node_id)
+    .bind(provider_id)
+    .bind(workspace_id)
+    .bind(&context)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    let running_id: Uuid = sqlx::query_scalar(
+        "insert into ai_tasks
+            (conversation_id, owner_id, runtime_node_id, provider_id, model, workspace_id,
+             status, stage, context)
+         values ($1, $2, $3, $4, 'test-model', $5, 'running', 'model', $6)
+         returning id",
+    )
+    .bind(conversation_id)
+    .bind(admin_id)
+    .bind(node_id)
+    .bind(provider_id)
+    .bind(workspace_id)
+    .bind(&context)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    let execution_id: Uuid = sqlx::query_scalar(
+        "insert into ai_tool_executions
+            (task_id, tool_call_id, tool_id, arguments, args_hash, status,
+             idempotency_key, dispatch_message_id)
+         values ($1, 'call_recover', 'fs.read', '{\"path\":\"a.txt\"}', 'hash',
+                 'running', $2, $3)
+         returning id",
+    )
+    .bind(running_id)
+    .bind(format!("{running_id}:call_recover"))
+    .bind(Uuid::new_v4())
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert!(!execution_id.is_nil());
+
+    let report = nexus::ai::recover_interrupted(&env.pool).await;
+    assert!(report.resume.contains(&queued_id));
+    assert!(report.reconcile.iter().any(|(id, _)| *id == running_id));
+    let queued_state: (String, Option<String>) =
+        sqlx::query_as("select status, recovery_state from ai_tasks where id = $1")
+            .bind(queued_id)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(queued_state.0, "queued");
+    assert_eq!(queued_state.1.as_deref(), Some("requeued"));
+    let running_state: (String, Option<String>) =
+        sqlx::query_as("select status, recovery_state from ai_tasks where id = $1")
+            .bind(running_id)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(running_state.0, "running");
+    assert_eq!(running_state.1.as_deref(), Some("awaiting_receipt"));
+    let _ = runtime;
     server.abort();
 }

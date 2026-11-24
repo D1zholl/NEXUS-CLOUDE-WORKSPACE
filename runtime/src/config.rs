@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RuntimeConfig {
     pub server: ServerConfig,
@@ -78,6 +78,10 @@ pub struct ProgramConfig {
     pub allow_any_args: bool,
     pub timeout_seconds: u64,
     pub max_output_bytes: usize,
+    /// deny (по умолчанию) — временный outbound block через Windows Firewall.
+    pub network_policy: String,
+    /// Лимит памяти процесса в байтах (0 — без лимита).
+    pub max_memory_bytes: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -85,19 +89,6 @@ pub struct ProgramConfig {
 pub struct LoggingConfig {
     pub level: String,
     pub keep_files: u32,
-}
-
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            storage: StorageConfig::default(),
-            provider: ProviderConfig::default(),
-            limits: LimitsConfig::default(),
-            programs: Vec::new(),
-            logging: LoggingConfig::default(),
-        }
-    }
 }
 
 impl Default for ServerConfig {
@@ -172,6 +163,8 @@ impl Default for ProgramConfig {
             allow_any_args: false,
             timeout_seconds: 300,
             max_output_bytes: 262_144,
+            network_policy: "deny".to_owned(),
+            max_memory_bytes: 0,
         }
     }
 }
@@ -272,6 +265,12 @@ impl RuntimeConfig {
             }
             if program.executable.trim().is_empty() {
                 bail!("programs: executable обязателен для {}", program.program_id);
+            }
+            if !matches!(program.network_policy.as_str(), "allow" | "deny") {
+                bail!(
+                    "programs.{}: network_policy должен быть allow или deny",
+                    program.program_id
+                );
             }
         }
         Ok(())

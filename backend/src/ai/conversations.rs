@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -390,6 +390,7 @@ pub async fn messages(
     conversation_id: Uuid,
     page: Option<i64>,
     per_page: Option<i64>,
+    tail: bool,
 ) -> ApiResult<Page<Value>> {
     let _ = owned_conversation(db, conversation_id, user_id).await?;
     let (page, per_page, offset) = normalize_pagination(page, per_page);
@@ -399,19 +400,36 @@ pub async fn messages(
     .bind(conversation_id)
     .fetch_one(db)
     .await?;
-    let rows = sqlx::query_as::<_, MessageRow>(
-        "select id, conversation_id, sequence, role, content, parts, model, status,
-                usage, tool_calls, tool_call_id, error_code, error_message, created_at, updated_at
-           from ai_messages
-          where conversation_id = $1 and deleted_at is null
-          order by sequence
-          limit $2 offset $3",
-    )
-    .bind(conversation_id)
-    .bind(per_page)
-    .bind(offset)
-    .fetch_all(db)
-    .await?;
+    let rows = if tail {
+        let mut rows = sqlx::query_as::<_, MessageRow>(
+            "select id, conversation_id, sequence, role, content, parts, model, status,
+                    usage, tool_calls, tool_call_id, error_code, error_message, created_at, updated_at
+               from ai_messages
+              where conversation_id = $1 and deleted_at is null
+              order by sequence desc
+              limit $2",
+        )
+        .bind(conversation_id)
+        .bind(per_page)
+        .fetch_all(db)
+        .await?;
+        rows.reverse();
+        rows
+    } else {
+        sqlx::query_as::<_, MessageRow>(
+            "select id, conversation_id, sequence, role, content, parts, model, status,
+                    usage, tool_calls, tool_call_id, error_code, error_message, created_at, updated_at
+               from ai_messages
+              where conversation_id = $1 and deleted_at is null
+              order by sequence
+              limit $2 offset $3",
+        )
+        .bind(conversation_id)
+        .bind(per_page)
+        .bind(offset)
+        .fetch_all(db)
+        .await?
+    };
     Ok(Page::new(
         rows.iter().map(message_view).collect(),
         page,
@@ -420,7 +438,7 @@ pub async fn messages(
     ))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendMessage {
     pub content: String,
@@ -971,10 +989,8 @@ pub async fn stop_generation(
         ));
     };
     let _ = conversation;
-    if let Some(request) = state.ai.runtime.pending_remove(chat.correlation_id) {
-        if let PendingRequest::Chat(tx) = request {
-            let _ = tx.try_send(ChatChunk::Cancelled);
-        }
+    if let Some(PendingRequest::Chat(tx)) = state.ai.runtime.pending_remove(chat.correlation_id) {
+        let _ = tx.try_send(ChatChunk::Cancelled);
     }
     let message_id = Uuid::new_v4();
     let _ = runtime::send_command(

@@ -54,9 +54,9 @@ C:\NexusAI\
 .\nexus-ai-runtime.exe check --config C:\NexusAI\runtime.toml --json
 ```
 
-`check` проверяет PolyStrata `/health`, `/status`, `/models`, наличие
-device token, доступность allowed roots и программ. Код возврата `2` — есть
-проблемы.
+`check` проверяет доступность NEXUS `/api/v1/health`, PolyStrata `/health`,
+`/status`, `/models`, наличие device token, allowed roots, программы и статус
+сетевой изоляции. Код возврата `2` — есть проблемы.
 
 ## 4. Enrollment
 
@@ -149,7 +149,9 @@ UNC и `..` отклоняются. `program.run` всегда требует п
 - При разрыве соединения неидемпотентные операции не перезапускаются
   автоматически: NEXUS переводит задачу в контролируемую ошибку/ручную проверку.
 - `task.cancel` отменяет HTTP-генерацию и завершает дерево процессов
-  (`taskkill /T /F` + `child.kill()`).
+  (`taskkill /T /F` + `child.kill()` + Job Object). Runtime присылает
+  `task.cancel_ack`, ждёт завершения активных операций и только затем
+  `task.cancelled{confirmed=true}`.
 - Runtime не хранит состояние задач как источник истины: истина — PostgreSQL NEXUS.
 
 ## 9. Ограничения и безопасность
@@ -160,11 +162,15 @@ UNC и `..` отклоняются. `program.run` всегда требует п
 - Не используйте одну и ту же папку для Cloud Storage NEXUS и AI workspace.
 - Скрипты из Skills не исполняются автоматически: только зарегистрированная
   программа с approval.
-- Сетевая политика программ ограничена на уровне аргументов/allowlist; для
-  строгой сетевой изоляции используйте Windows Firewall/отдельный профиль
-  пользователя. MCP в этой версии не включён.
-- Секреты (device token, API key) не пишутся в журналы; journald/stderr службы
-  не содержит токенов.
+- Программы: allowlist аргументов, без shell, Job Object (kill-on-close),
+  лимит памяти. `network_policy="deny"` (по умолчанию) временно добавляет
+  Windows Firewall outbound block для executable; без прав администратора
+  запуск отклоняется (fail closed). Правило адресуется executable, поэтому на
+  время запуска блокирует сеть всех процессов этого executable.
+- MCP включён через реестр соединений (`mcp.configure`/`mcp.discover`), только
+  Streamable HTTP; SSRF-проверка выполняется и на Runtime.
+- Секреты (device token, API key, MCP secret) не пишутся в журналы; journald/stderr
+  службы не содержит токенов. Outbox NEXUS не хранит MCP secret.
 
 ## 10. Диагностика
 

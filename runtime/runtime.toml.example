@@ -68,6 +68,11 @@ allow_any_args = false
 arg_patterns = ["^[A-Za-z0-9._/\\\\-]{1,250}$"]
 timeout_seconds = 300
 max_output_bytes = 262144
+# deny (по умолчанию) — Runtime временно блокирует outbound-сеть процесса.
+# Требует прав администратора; без них запуск отклоняется (fail closed).
+network_policy = "deny"
+# Лимит памяти процесса в байтах (0 — без лимита).
+max_memory_bytes = 0
 
 [[programs]]
 program_id = "node"
@@ -94,7 +99,7 @@ max_output_bytes = 262144
 [[programs]]
 program_id = "cargo"
 name = "Rust Cargo"
-executable = "C:\\Users\\max\\.cargo\\bin\\cargo.exe"
+executable = "C:\\Tools\\cargo\\bin\\cargo.exe"
 version = "1.x"
 risk = "high"
 allow_any_args = false

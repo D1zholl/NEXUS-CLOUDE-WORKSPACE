@@ -6,6 +6,8 @@ use axum::Json;
 use axum::Router;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Multipart, Path, Query, State};
+use axum::http::HeaderMap;
+use axum::response::Response;
 use axum::routing::{get, patch, post};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -16,6 +18,7 @@ use crate::ai::{approvals, conversations, orchestrator, providers, skills, tools
 use crate::api::{ApiOk, Page, normalize_pagination};
 use crate::auth::session::AuthUser;
 use crate::core::error::{ApiError, ApiResult};
+use crate::core::idempotency;
 use crate::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -59,6 +62,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/workspaces", get(list_workspaces))
         .route("/workspaces/{id}", get(get_workspace))
         .route("/workspaces/{id}/usage", get(workspace_usage))
+        .route(
+            "/workspaces/{id}/usage/refresh",
+            post(refresh_workspace_usage),
+        )
         .route("/skills", get(list_skills))
         .route("/skills/{id}", get(get_skill))
         .route("/tools", get(list_tools))
@@ -197,6 +204,7 @@ async fn delete_conversation(
 struct MessageQuery {
     page: Option<i64>,
     per_page: Option<i64>,
+    tail: Option<bool>,
 }
 
 async fn list_messages(
@@ -209,7 +217,15 @@ async fn list_messages(
     let id = parse_path(path)?;
     let query = parse_query(query)?;
     Ok(ApiOk(
-        conversations::messages(&state.db, actor.id, id, query.page, query.per_page).await?,
+        conversations::messages(
+            &state.db,
+            actor.id,
+            id,
+            query.page,
+            query.per_page,
+            query.tail.unwrap_or(false),
+        )
+        .await?,
     ))
 }
 
@@ -217,14 +233,26 @@ async fn send_message(
     State(state): State<Arc<AppState>>,
     actor: AuthUser,
     path: Result<Path<Uuid>, PathRejection>,
+    headers: HeaderMap,
     body: Result<Json<conversations::SendMessage>, JsonRejection>,
-) -> ApiResult<ApiOk<Value>> {
+) -> ApiResult<Response> {
     actor.require("ai.access")?;
     let id = parse_path(path)?;
     let request = parse_body(body)?;
-    Ok(ApiOk(
-        conversations::send(&state, &actor, id, request).await?,
-    ))
+    let request_hash = idempotency::hash_request(&json!({
+        "conversationId": id,
+        "body": &request,
+    }));
+    let scope = format!("ai.chat.send:{id}");
+    idempotency::run_idempotent(
+        &state,
+        actor.id,
+        &scope,
+        &headers,
+        request_hash,
+        conversations::send(&state, &actor, id, request),
+    )
+    .await
 }
 
 async fn regenerate_message(
@@ -337,7 +365,7 @@ async fn list_tasks(
         "select id, conversation_id, owner_id, runtime_node_id, provider_id, model,
                 workspace_id, status, stage, status_text, progress, iterations,
                 max_iterations, tool_calls_count, timeout_seconds, human_input, context,
-                cancel_requested, started_at, finished_at, error_code, error_message,
+                cancel_requested, cancel_status, cancel_requested_at, cancel_confirmed_at, started_at, finished_at, error_code, error_message,
                 created_at, updated_at
            from ai_tasks
           where owner_id = $1
@@ -360,7 +388,7 @@ async fn list_tasks(
     )))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateTaskRequest {
     conversation_id: Uuid,
@@ -371,26 +399,42 @@ struct CreateTaskRequest {
 async fn create_task(
     State(state): State<Arc<AppState>>,
     actor: AuthUser,
+    headers: HeaderMap,
     body: Result<Json<CreateTaskRequest>, JsonRejection>,
-) -> ApiResult<ApiOk<Value>> {
+) -> ApiResult<Response> {
     actor.require("ai.agent.use")?;
     let request = parse_body(body)?;
-    let result = conversations::send(
+    let request_hash = idempotency::hash_request(&request);
+    let scope = format!("ai.task.create:{}", request.conversation_id);
+    let conversation_id = request.conversation_id;
+    let content = request.content.clone();
+    let idempotency_key = request.idempotency_key.clone();
+    let st = state.clone();
+    idempotency::run_idempotent(
         &state,
-        &actor,
-        request.conversation_id,
-        conversations::SendMessage {
-            content: request.content,
-            attachment_ids: None,
-            idempotency_key: request.idempotency_key,
+        actor.id,
+        &scope,
+        &headers,
+        request_hash,
+        async move {
+            let result = conversations::send(
+                &st,
+                &actor,
+                conversation_id,
+                conversations::SendMessage {
+                    content,
+                    attachment_ids: None,
+                    idempotency_key,
+                },
+            )
+            .await?;
+            result
+                .get("task")
+                .cloned()
+                .ok_or_else(|| ApiError::validation("Диалог не в Agent Mode."))
         },
     )
-    .await?;
-    let task = result
-        .get("task")
-        .cloned()
-        .ok_or_else(|| ApiError::validation("Диалог не в Agent Mode."))?;
-    Ok(ApiOk(task))
+    .await
 }
 
 async fn get_task(
@@ -422,10 +466,22 @@ async fn cancel_task(
     State(state): State<Arc<AppState>>,
     actor: AuthUser,
     path: Result<Path<Uuid>, PathRejection>,
-) -> ApiResult<ApiOk<Value>> {
+    headers: HeaderMap,
+) -> ApiResult<Response> {
     actor.require("ai.access")?;
     let id = parse_path(path)?;
-    Ok(ApiOk(orchestrator::cancel_task(&state, &actor, id).await?))
+    let request_hash = idempotency::hash_request(&json!({ "taskId": id, "action": "cancel" }));
+    let scope = format!("ai.task.cancel:{id}");
+    let st = state.clone();
+    idempotency::run_idempotent(
+        &state,
+        actor.id,
+        &scope,
+        &headers,
+        request_hash,
+        async move { orchestrator::cancel_task(&st, &actor, id).await },
+    )
+    .await
 }
 
 async fn task_executions(
@@ -505,42 +561,54 @@ async fn approve(
     State(state): State<Arc<AppState>>,
     actor: AuthUser,
     path: Result<Path<Uuid>, PathRejection>,
+    headers: HeaderMap,
     body: Result<Json<ApprovalDecision>, JsonRejection>,
-) -> ApiResult<ApiOk<Value>> {
+) -> ApiResult<Response> {
     actor.require("ai.actions.approve")?;
     let id = parse_path(path)?;
     let request = parse_body(body).unwrap_or(ApprovalDecision { reason: None });
-    Ok(ApiOk(
-        approvals::decide(
-            &state,
-            &actor,
-            id,
-            true,
-            request.reason.as_deref().unwrap_or(""),
-        )
-        .await?,
-    ))
+    let reason = request.reason.unwrap_or_default();
+    let request_hash = idempotency::hash_request(
+        &json!({ "approvalId": id, "decision": "approve", "reason": &reason }),
+    );
+    let scope = format!("ai.approval.approve:{id}");
+    let st = state.clone();
+    idempotency::run_idempotent(
+        &state,
+        actor.id,
+        &scope,
+        &headers,
+        request_hash,
+        async move { approvals::decide(&st, &actor, id, true, &reason).await },
+    )
+    .await
 }
 
 async fn reject(
     State(state): State<Arc<AppState>>,
     actor: AuthUser,
     path: Result<Path<Uuid>, PathRejection>,
+    headers: HeaderMap,
     body: Result<Json<ApprovalDecision>, JsonRejection>,
-) -> ApiResult<ApiOk<Value>> {
+) -> ApiResult<Response> {
     actor.require("ai.actions.approve")?;
     let id = parse_path(path)?;
     let request = parse_body(body).unwrap_or(ApprovalDecision { reason: None });
-    Ok(ApiOk(
-        approvals::decide(
-            &state,
-            &actor,
-            id,
-            false,
-            request.reason.as_deref().unwrap_or(""),
-        )
-        .await?,
-    ))
+    let reason = request.reason.unwrap_or_default();
+    let request_hash = idempotency::hash_request(
+        &json!({ "approvalId": id, "decision": "reject", "reason": &reason }),
+    );
+    let scope = format!("ai.approval.reject:{id}");
+    let st = state.clone();
+    idempotency::run_idempotent(
+        &state,
+        actor.id,
+        &scope,
+        &headers,
+        request_hash,
+        async move { approvals::decide(&st, &actor, id, false, &reason).await },
+    )
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -579,6 +647,18 @@ async fn workspace_usage(
     actor.require("ai.workspace.read")?;
     let id = parse_path(path)?;
     let _ = workspaces::accessible(&state.db, id, actor.id, false, false).await?;
+    Ok(ApiOk(workspaces::usage_summary(&state.db, id).await?))
+}
+
+async fn refresh_workspace_usage(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    actor.require("ai.workspace.read")?;
+    let id = parse_path(path)?;
+    let _ = workspaces::accessible(&state.db, id, actor.id, false, true).await?;
+    workspaces::refresh_usage(&state, id).await?;
     Ok(ApiOk(workspaces::usage_summary(&state.db, id).await?))
 }
 

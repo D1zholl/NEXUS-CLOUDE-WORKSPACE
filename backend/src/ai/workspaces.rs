@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::ai::models::{QuotaRow, WorkspaceRow, load_quota};
 use crate::core::error::{ApiError, ApiResult};
+use crate::state::AppState;
 
 pub const DEFAULT_QUOTA_BYTES: i64 = 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_FILES: i32 = 10_000;
@@ -19,6 +20,7 @@ pub async fn load_workspace(db: &PgPool, id: Uuid) -> ApiResult<WorkspaceRow> {
         "select id, owner_id, runtime_node_id, name, root_path, quota_bytes, max_files,
                 max_file_bytes, max_parallel_tasks, max_task_seconds, allowed_tools,
                 allowed_programs, status, usage_bytes, usage_files, usage_checked_at,
+                network_policy, max_process_memory_bytes, usage_reported_by, usage_error,
                 created_by, created_at, updated_at
            from ai_workspaces where id = $1",
     )
@@ -33,6 +35,7 @@ pub async fn list_for_owner(db: &PgPool, owner_id: Uuid) -> ApiResult<Vec<Worksp
         "select id, owner_id, runtime_node_id, name, root_path, quota_bytes, max_files,
                 max_file_bytes, max_parallel_tasks, max_task_seconds, allowed_tools,
                 allowed_programs, status, usage_bytes, usage_files, usage_checked_at,
+                network_policy, max_process_memory_bytes, usage_reported_by, usage_error,
                 created_by, created_at, updated_at
            from ai_workspaces where owner_id = $1 order by lower(name)",
     )
@@ -46,6 +49,7 @@ pub async fn list_all(db: &PgPool) -> ApiResult<Vec<WorkspaceRow>> {
         "select id, owner_id, runtime_node_id, name, root_path, quota_bytes, max_files,
                 max_file_bytes, max_parallel_tasks, max_task_seconds, allowed_tools,
                 allowed_programs, status, usage_bytes, usage_files, usage_checked_at,
+                network_policy, max_process_memory_bytes, usage_reported_by, usage_error,
                 created_by, created_at, updated_at
            from ai_workspaces order by created_at desc",
     )
@@ -201,8 +205,96 @@ pub async fn usage_summary(db: &PgPool, workspace_id: Uuid) -> ApiResult<Value> 
         "maxFileBytes": workspace.max_file_bytes,
         "maxParallelTasks": workspace.max_parallel_tasks,
         "maxTaskSeconds": workspace.max_task_seconds,
+        "networkPolicy": workspace.network_policy,
         "checkedAt": workspace.usage_checked_at,
         "source": if workspace.usage_checked_at.is_some() { "runtime" } else { "none" },
+        "error": workspace.usage_error,
         "now": Utc::now(),
     }))
+}
+
+/// Сохраняет usage, измеренный Runtime, и историю замеров.
+pub async fn record_usage(
+    db: &PgPool,
+    workspace_id: Uuid,
+    node_id: Uuid,
+    usage: &crate::ai::runtime::protocol::WorkspaceUsage,
+) -> ApiResult<()> {
+    let checked_at = usage.checked_at.unwrap_or_else(Utc::now);
+    sqlx::query(
+        "update ai_workspaces
+            set usage_bytes = $2, usage_files = $3, usage_checked_at = $4,
+                usage_reported_by = $5, usage_error = $6, updated_at = now()
+          where id = $1",
+    )
+    .bind(workspace_id)
+    .bind(usage.bytes.max(0))
+    .bind(usage.files.max(0))
+    .bind(checked_at)
+    .bind(node_id)
+    .bind(usage.error.as_deref())
+    .execute(db)
+    .await?;
+    let _ = sqlx::query(
+        "insert into ai_workspace_usage_samples
+            (workspace_id, node_id, used_bytes, used_files, source, error, created_at)
+         values ($1, $2, $3, $4, 'runtime', $5, now())",
+    )
+    .bind(workspace_id)
+    .bind(node_id)
+    .bind(usage.bytes.max(0))
+    .bind(usage.files.max(0))
+    .bind(usage.error.as_deref())
+    .execute(db)
+    .await;
+    Ok(())
+}
+
+/// Запрашивает актуальный usage у Runtime по защищённому каналу.
+pub async fn refresh_usage(
+    state: &AppState,
+    workspace_id: Uuid,
+) -> ApiResult<crate::ai::runtime::protocol::WorkspaceUsage> {
+    let workspace = load_workspace(&state.db, workspace_id).await?;
+    if !state.ai.runtime.is_online(workspace.runtime_node_id) {
+        return Err(crate::ai::errors::runtime_offline());
+    }
+    let message_id = Uuid::new_v4();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state.ai.runtime.pending_register(
+        message_id,
+        workspace.runtime_node_id,
+        crate::ai::PendingRequest::Reply(tx),
+    );
+    if let Err(error) = crate::ai::runtime::send_command(
+        state,
+        workspace.runtime_node_id,
+        message_id,
+        crate::ai::runtime::protocol::kind::WORKSPACE_USAGE,
+        Some(message_id),
+        None,
+        json!({
+            "workspaceId": workspace.id,
+            "workspaceRoot": workspace.root_path,
+        }),
+        None,
+    )
+    .await
+    {
+        let _ = state.ai.runtime.pending_remove(message_id);
+        return Err(error);
+    }
+    let usage = match tokio::time::timeout(std::time::Duration::from_secs(25), rx).await {
+        Ok(Ok(crate::ai::runtime::RuntimeReply::Usage(usage))) => usage,
+        _ => {
+            let _ = state.ai.runtime.pending_remove(message_id);
+            return Err(ApiError::unavailable(
+                "AI_USAGE_TIMEOUT",
+                "Runtime не вернул usage рабочего пространства.",
+                5,
+            ));
+        }
+    };
+    record_usage(&state.db, workspace.id, workspace.runtime_node_id, &usage).await?;
+    Ok(usage)
 }
