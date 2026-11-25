@@ -399,7 +399,7 @@ MyLauncher (`manifestVersion: 1`), `launcher_manifest_hash` — SHA-256
 
 ---
 
-## NEXUS AI Workspace (миграции `0019_ai.sql`, `0020_ai_hardening.sql`)
+## NEXUS AI Workspace (миграции `0019`–`0024`)
 
 Основные таблицы: `ai_provider_configs`, `ai_runtime_nodes`,
 `ai_runtime_enrollment_codes`, `ai_runtime_commands`, `ai_runtime_events`,
@@ -408,7 +408,10 @@ MyLauncher (`manifestVersion: 1`), `launcher_manifest_hash` — SHA-256
 `ai_attachments`, `ai_tasks`, `ai_task_events`, `ai_tool_executions`,
 `ai_tool_approvals`, `ai_skills`, `ai_skill_files`, `ai_skill_versions`,
 `ai_skill_version_files`, `ai_skill_assignments`, `ai_tool_policies`,
-`ai_programs`, `ai_mcp_connections`, `ai_mcp_tools`, `ai_mcp_assignments`.
+`ai_programs`, `ai_mcp_connections`, `ai_mcp_tools`, `ai_mcp_assignments`,
+`ai_file_snapshots` (`0022`), `ai_workspace_lifecycle` и
+`ai_workspace_purge_events` (`0023`), `ai_quota_reservations` и
+`ai_quota_events` (`0024`).
 
 Ключевые инварианты:
 
@@ -425,7 +428,13 @@ MyLauncher (`manifestVersion: 1`), `launcher_manifest_hash` — SHA-256
 * `ai_workspaces.root_path` — не возвращается пользователю без `ai.admin.manage`;
 * `ai_skill_version_files (version_id, path)` — полный snapshot каждой версии;
 * `ai_runtime_commands.message_id` — уникальный id команды;
-* `ai_mcp_tools.tool_id` / `model_name` — уникальные имена для модели.
+* `ai_mcp_tools.tool_id` / `model_name` — уникальные имена для модели;
+* `ai_workspace_lifecycle.workspace_id` — одна запись жизненного цикла на
+  workspace, состояние и `purge_after`; `blocked` не повторяется автоматически;
+* `ai_quota_reservations.operation_id` — идемпотентность резерва; активные и
+  `uncertain` резервы учитываются в квоте;
+* `ai_workspace_purge_events` / `ai_quota_events` — журналы попыток и решений
+  без содержимого файлов и секретов.
 
 `ai_tasks` содержит `cancel_status` (`none/requested/confirmed/failed`),
 `cancel_requested_at`, `cancel_confirmed_at`, `cancel_message_id`,
