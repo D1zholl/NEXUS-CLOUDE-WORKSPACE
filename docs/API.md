@@ -1097,7 +1097,7 @@ node scripts/gen-api-doc.mjs
 ```
 
 <!-- BEGIN GENERATED ENDPOINTS -->
-> Всего путей: **185**, операций: **224**.
+> Всего путей: **207**, операций: **251**.
 > Таблица генерируется из `docs/openapi.json` командой `node scripts/gen-api-doc.mjs`.
 
 ### Auth — Авторизация и сессии
@@ -1339,8 +1339,10 @@ node scripts/gen-api-doc.mjs
 | `GET` | `/api/v1/ai/tools` | Каталог разрешённых инструментов | Cookie |
 | `GET` | `/api/v1/ai/workspaces` | Рабочие пространства пользователя | Cookie |
 | `GET` | `/api/v1/ai/workspaces/{id}` | Метаданные workspace | Cookie |
+| `POST` | `/api/v1/ai/workspaces/{id}/restore` | Восстановить мягко удалённый workspace | Cookie + CSRF |
 | `GET` | `/api/v1/ai/workspaces/{id}/usage` | Использование и квоты | Cookie |
 | `POST` | `/api/v1/ai/workspaces/{id}/usage/refresh` | Запросить актуальный usage workspace у Runtime | Cookie + CSRF |
+| `GET` | `/api/v1/ai/workspaces/deleted` | Удалённые workspace, доступные для восстановления | Cookie |
 
 ### AI Admin — Runtime, провайдеры, workspace, Skills и политики
 
@@ -1372,6 +1374,7 @@ node scripts/gen-api-doc.mjs
 | `POST` | `/api/v1/ai/admin/providers/{id}/test` | Проверить PolyStrata через Runtime | Cookie + CSRF |
 | `GET` | `/api/v1/ai/admin/quotas` | AI-квоты пользователей | Cookie |
 | `PUT` | `/api/v1/ai/admin/quotas/{user_id}` | Установить AI-квоту | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/quotas/reservations/{id}/release` | Освободить зависший резерв AI-квоты | Cookie + CSRF |
 | `GET` | `/api/v1/ai/admin/runtime-nodes` | Список Runtime | Cookie |
 | `GET` | `/api/v1/ai/admin/runtime-nodes/{id}` | Детали Runtime | Cookie |
 | `POST` | `/api/v1/ai/admin/runtime-nodes/{id}/disable` | Отключить Runtime | Cookie + CSRF |
@@ -1395,7 +1398,12 @@ node scripts/gen-api-doc.mjs
 | `GET` | `/api/v1/ai/admin/workspaces` | Все workspace | Cookie |
 | `POST` | `/api/v1/ai/admin/workspaces` | Создать workspace | Cookie + CSRF |
 | `PATCH` | `/api/v1/ai/admin/workspaces/{id}` | Изменить workspace | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/workspaces/{id}/purge` | Поставить физическую очистку workspace в очередь | Cookie + CSRF |
+| `POST` | `/api/v1/ai/admin/workspaces/{id}/tools/grant-defaults` | Добавить безопасные инструменты в allowlist workspace | Cookie + CSRF |
 | `POST` | `/api/v1/ai/admin/workspaces/{id}/usage/refresh` | Принудительно обновить usage workspace | Cookie + CSRF |
+| `GET` | `/api/v1/ai/admin/workspaces/lifecycle` | Жизненный цикл workspace | Cookie |
+| `GET` | `/api/v1/ai/admin/workspaces/purge/dry-run` | Dry-run очереди физической очистки | Cookie |
+| `GET` | `/api/v1/ai/admin/workspaces/purge/metrics` | Метрики очереди физической очистки | Cookie |
 
 ### AI Runtime — Регистрация и исходящий канал NEXUS AI Runtime
 
@@ -1403,6 +1411,30 @@ node scripts/gen-api-doc.mjs
 |---|---|---|---|
 | `GET` | `/api/v1/ai/runtime/connect` | Исходящий WebSocket Runtime (Bearer device token) | Bearer |
 | `POST` | `/api/v1/ai/runtime/enroll` | Регистрация Runtime по одноразовому коду | — |
+
+### AI Workspace
+
+| Метод | Путь | Описание | Доступ |
+|---|---|---|---|
+| `POST` | `/api/v1/ai/workspaces` | Создать workspace владельца (Runtime выделяет каталог) | Cookie + CSRF |
+| `PATCH` | `/api/v1/ai/workspaces/{id}` | Переименовать workspace | Cookie + CSRF |
+| `DELETE` | `/api/v1/ai/workspaces/{id}` | Мягко удалить workspace (файлы сохраняются) | Cookie + CSRF |
+| `GET` | `/api/v1/ai/workspaces/{id}/changes` | Изменённые агентом файлы (снимки) | Cookie |
+| `GET` | `/api/v1/ai/workspaces/{id}/files` | Дерево файлов workspace (Runtime fs.list) | Cookie |
+| `DELETE` | `/api/v1/ai/workspaces/{id}/files` | Удалить файл или каталог | Cookie + CSRF |
+| `GET` | `/api/v1/ai/workspaces/{id}/files/content` | Содержимое текстового файла и sha256 | Cookie |
+| `PUT` | `/api/v1/ai/workspaces/{id}/files/content` | Сохранить файл с проверкой baseSha256 | Cookie + CSRF |
+| `POST` | `/api/v1/ai/workspaces/{id}/files/copy` | Копировать файл | Cookie + CSRF |
+| `POST` | `/api/v1/ai/workspaces/{id}/files/directory` | Создать каталог | Cookie + CSRF |
+| `POST` | `/api/v1/ai/workspaces/{id}/files/move` | Переместить или переименовать | Cookie + CSRF |
+| `GET` | `/api/v1/ai/workspaces/{id}/files/raw` | Скачать бинарный файл workspace | Cookie |
+| `POST` | `/api/v1/ai/workspaces/{id}/files/search` | Поиск по содержимому workspace | Cookie + CSRF |
+| `GET` | `/api/v1/ai/workspaces/{id}/files/stat` | Метаданные файла workspace | Cookie |
+| `POST` | `/api/v1/ai/workspaces/{id}/files/upload` | Загрузить файл с компьютера | Cookie + CSRF |
+| `GET` | `/api/v1/ai/workspaces/{id}/overview` | Сводка workspace: задачи, usage, активности | Cookie |
+| `GET` | `/api/v1/ai/workspaces/{id}/snapshots/{snapshot_id}` | Снимок файла до/после для diff | Cookie |
+| `POST` | `/api/v1/ai/workspaces/{id}/snapshots/{snapshot_id}/restore` | Безопасный откат одного файла | Cookie + CSRF |
+| `POST` | `/api/v1/ai/workspaces/{id}/tasks/{task_id}/restore` | Откат всех файлов задачи с проверкой конфликтов | Cookie + CSRF |
 <!-- END GENERATED ENDPOINTS -->
 
 ---
@@ -1565,3 +1597,76 @@ workspaces, skills, tools. Административные — `/api/v1/ai/admi
 Полный список, события `ai.*`, конверт протокола и коды ошибок:
 [`AI_WORKSPACE.md`](AI_WORKSPACE.md). OpenAPI 3.1 обновляется вместе с
 `backend/src/api/openapi/ai.rs`.
+
+### AI: события задачи и инкрементальное восстановление
+
+`GET /api/v1/ai/tasks/{id}/events` поддерживает:
+
+| Параметр | Значение |
+|---|---|
+| `perPage` | 1..500, по умолчанию 200 |
+| `after` | вернуть только события с `id > after` в возрастающем порядке |
+
+Каждый элемент: `id` (bigserial), `kind`, `stage`, `message`, `data`,
+`createdAt`. Без `after` возвращается последняя страница (тоже в возрастающем
+порядке). `after` используется клиентом после reconnect/F5; полная история не
+перечитывается. WebSocket-события `ai.task.*`, `ai.tool.*`,
+`agent.file.changed` дополнительно содержат `eventId` и `sequence` (равны
+`ai_task_events.id`), поэтому WS и HTTP можно смешивать: клиент дедуплицирует
+по `eventId` и сортирует по возрастанию.
+
+### AI: потоковость Agent Mode
+
+Agent использует тот же канал, что и Chat:
+
+* `provider.chat.start` уходит с `stream=true` и списком разрешённых
+  инструментов;
+* `provider.chat.delta` транслируется в `ai.message.delta`
+  (`conversationId`, `messageId`, `delta`);
+* промежуточные assistant-сообщения сохраняются в `ai_messages` с
+  `task_id`/`iteration` и `status='streaming'`, затем `completed`;
+* неполный JSON аргументов инструмента никогда не запускает инструмент.
+
+Скрытые рассуждения модели (`reasoning_content`) не передаются и не хранятся.
+
+### AI: tool calling, approvals и результаты
+
+* Модель предлагает вызов; Backend проверяет allowlist workspace, RBAC,
+  JSON Schema, версию инструмента и capabilities Runtime.
+* Опасное действие (`approval_policy='always'` или риск ≥ medium при политике
+  `risk`) создаёт `ai_tool_approvals` с TTL 15 минут и `argsHash`.
+* `POST /ai/approvals/{id}/approve|reject`: повторное решение — `409`;
+  reject завершает задачу через `finalize` (`ai.task.cancelled`, audit);
+  истёкший approval завершает задачу `AI_APPROVAL_EXPIRED`.
+* `GET /ai/tasks/{id}/executions` возвращает `toolId`, `toolVersion`,
+  `arguments` (редактированные), `status`, `result`, `resultText`,
+  `changedFiles[]` (`path`, `action`, `additions`, `deletions`), `diff`,
+  `exitCode`, `durationMs`, `errorCode/errorMessage`.
+* `agent.file.changed` публикуется на каждый изменённый файл (без содержимого).
+
+Повтор идемпотентных инструментов ограничен: только `idempotent=true`,
+не более двух попыток, только для `AI_TOOL_FAILED`/пред-исполнительных ошибок.
+Тайм-аут, обрыв соединения и `AI_EXECUTION_UNKNOWN` не повторяются.
+
+### AI: Skills
+
+* `GET /ai/skills?workspaceId=` — только назначенные пользователю Skills.
+* `POST /ai/conversations/{id}/messages` принимает `skillIds: uuid[]`;
+  выбранные Skills сохраняются в `ai_tasks.skill_ids` и ограничивают
+  `skill.load`.
+* `skills.list` (server-side) возвращает метаданные выбранных/назначенных
+  Skills; `skill.load` — содержимое по требованию. Skill не расширяет права.
+
+### AI: Runtime capabilities и allowlist workspace
+
+* `ai_runtime_nodes.capabilities.tools` содержит `toolId` и `version`;
+  Backend не предлагает модели инструмент, которого нет на подключённом
+  Runtime или у которого не совпадает версия.
+* `program.run` доступен только при наличии программы в
+  `ai_programs.available` и в `allowedPrograms` workspace.
+* Новый workspace получает безопасный набор (low/medium risk + Skills).
+  Старые workspace могут не содержать `fs.stat`/`skills.list`:
+  `GET /ai/admin/workspaces` показывает `missingSafeTools`, а
+  `POST /ai/admin/workspaces/{id}/tools/grant-defaults` добавляет только
+  безопасные инструменты. Права не расширяются автоматически; операция
+  аудируется (`ai.workspace.tools_granted`).

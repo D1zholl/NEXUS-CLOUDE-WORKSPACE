@@ -25,7 +25,8 @@ use uuid::Uuid;
 
 use crate::ai::runtime::protocol::{
     Envelope, ExecutionStatusResult, McpDiscoveryResult, ProgramDescriptor, ProviderChatCompleted,
-    ProviderResponse, RuntimeCapabilities, ToolOutcome, WorkspaceUsage, kind,
+    ProviderResponse, RuntimeCapabilities, ToolOutcome, WorkspaceDeleteResult,
+    WorkspaceProvisionResult, WorkspaceUsage, kind,
 };
 use crate::ai::{ChatChunk, PROTOCOL_VERSION, PendingRequest, errors};
 use crate::auth::session::generate_token;
@@ -45,6 +46,8 @@ pub enum RuntimeReply {
     Failed(RuntimeFailure),
     McpDiscovery(McpDiscoveryResult),
     Usage(WorkspaceUsage),
+    Provision(WorkspaceProvisionResult),
+    Delete(WorkspaceDeleteResult),
     ExecutionStatus(ExecutionStatusResult),
 }
 
@@ -978,6 +981,7 @@ async fn handle_message(
                             content: completed.content.clone(),
                             usage: completed.usage.clone(),
                             finish_reason: completed.finish_reason.clone(),
+                            tool_calls: completed.tool_calls.clone(),
                         });
                     }
                     PendingRequest::Reply(tx) => {
@@ -1253,6 +1257,30 @@ async fn handle_message(
             }
             complete_command(&ctx.db, correlation, true, None).await;
         }
+        kind::WORKSPACE_PROVISION_RESULT => {
+            let Some(correlation) = envelope.correlation_id else {
+                return Ok(());
+            };
+            let result: WorkspaceProvisionResult =
+                serde_json::from_value(envelope.payload.clone()).unwrap_or_default();
+            if let Some(PendingRequest::Reply(tx)) = ctx.ai.runtime.pending_remove(correlation) {
+                let _ = tx.send(RuntimeReply::Provision(result));
+            }
+            complete_command(&ctx.db, correlation, true, None).await;
+        }
+        kind::WORKSPACE_DELETE_RESULT => {
+            let Some(correlation) = envelope.correlation_id else {
+                return Ok(());
+            };
+            let result: WorkspaceDeleteResult =
+                serde_json::from_value(envelope.payload.clone()).unwrap_or_default();
+            let ok = result.ok;
+            let error = result.error.clone();
+            if let Some(PendingRequest::Reply(tx)) = ctx.ai.runtime.pending_remove(correlation) {
+                let _ = tx.send(RuntimeReply::Delete(result));
+            }
+            complete_command(&ctx.db, correlation, ok, error.as_deref()).await;
+        }
         kind::EXECUTION_STATUS_RESULT => {
             let Some(correlation) = envelope.correlation_id else {
                 return Ok(());
@@ -1418,6 +1446,19 @@ pub async fn publish_task_event(
     message: &str,
     data: Value,
 ) {
+    let event_id: Option<i64> = sqlx::query_scalar(
+        "insert into ai_task_events (task_id, kind, stage, message, data)
+         values ($1, $2, 'runtime', $3, $4)
+         returning id",
+    )
+    .bind(task_id)
+    .bind(kind)
+    .bind(message.chars().take(500).collect::<String>())
+    .bind(&data)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
     let owner: Option<Uuid> = sqlx::query_scalar("select owner_id from ai_tasks where id = $1")
         .bind(task_id)
         .fetch_optional(&state.db)
@@ -1430,8 +1471,12 @@ pub async fn publish_task_event(
             owner_id,
             json!({
                 "taskId": task_id,
+                "kind": kind,
                 "message": message,
+                "stage": "runtime",
                 "data": data,
+                "eventId": event_id,
+                "sequence": event_id,
                 "at": Utc::now(),
             }),
         );

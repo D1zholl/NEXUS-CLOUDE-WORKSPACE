@@ -97,7 +97,9 @@ export function serverEnv(): Record<string, string> {
     process.env[key] ?? fileEnv[key] ?? fallback;
 
   return {
-    DATABASE_URL: pick('DATABASE_URL', 'postgres://nexus:nexus@127.0.0.1:5432/nexus'),
+    DATABASE_URL:
+      process.env.E2E_DATABASE_URL ??
+      pick('DATABASE_URL', 'postgres://nexus:nexus@127.0.0.1:5432/nexus'),
     NEXUS_SECRET: pick('NEXUS_SECRET', 'e2e-secret-e2e-secret-e2e-secret-2026'),
     NEXUS_HOST: '127.0.0.1',
     NEXUS_PORT: String(SERVER_PORT),

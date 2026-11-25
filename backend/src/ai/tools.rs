@@ -33,6 +33,8 @@ pub struct ToolSpec {
     pub input_schema: Value,
     /// true — инструмент исполняется backend (skill.load, mcp discovery), не Runtime.
     pub server_side: bool,
+    /// true — инструмент доступен только файловому API пользователя, но не модели.
+    pub ui_only: bool,
     /// true — инструмент является внешним MCP-tool и исполняется Runtime через MCP.
     pub mcp: bool,
 }
@@ -73,9 +75,16 @@ impl From<StaticToolSpec> for ToolSpec {
             max_output_bytes: value.max_output_bytes,
             input_schema: value.input_schema,
             server_side: value.server_side,
+            ui_only: is_ui_only(value.id),
             mcp: false,
         }
     }
+}
+
+/// Служебные инструменты файлового API: доступны только владельцу workspace,
+/// никогда не передаются модели как tools.
+pub fn is_ui_only(id: &str) -> bool {
+    matches!(id, "fs.read_base64" | "fs.write_base64")
 }
 
 const RISK_LOW: &str = "low";
@@ -139,7 +148,29 @@ fn static_catalog() -> Vec<StaticToolSpec> {
             input_schema: schema_object(
                 json!({
                     "path": path_property("Относительный путь к файлу."),
-                    "maxBytes": { "type": "integer", "minimum": 1, "maximum": 1048576, "default": 262144 }
+                    "maxBytes": { "type": "integer", "minimum": 1, "maximum": 8388608, "default": 262144 }
+                }),
+                &["path"],
+            ),
+            server_side: false,
+        },
+        StaticToolSpec {
+            id: "fs.read_base64",
+            model_name: "fs_read_base64",
+            version: 1,
+            name: "Чтение бинарного файла",
+            description: "Читает файл как Base64 для просмотра изображений и скачивания.",
+            category: "filesystem",
+            risk: RISK_LOW,
+            approval_policy: "never",
+            permission: "ai.workspace.read",
+            idempotent: true,
+            timeout_seconds: 30,
+            max_output_bytes: 11_500_000,
+            input_schema: schema_object(
+                json!({
+                    "path": path_property("Относительный путь к файлу."),
+                    "maxBytes": { "type": "integer", "minimum": 1, "maximum": 8388608, "default": 8388608 }
                 }),
                 &["path"],
             ),
@@ -162,9 +193,34 @@ fn static_catalog() -> Vec<StaticToolSpec> {
                 json!({
                     "path": path_property("Относительный путь к файлу."),
                     "content": { "type": "string", "maxLength": 1048576 },
-                    "overwrite": { "type": "boolean", "default": false }
+                    "overwrite": { "type": "boolean", "default": false },
+                    "expectedSha256": { "type": "string", "minLength": 64, "maxLength": 64 }
                 }),
                 &["path", "content"],
+            ),
+            server_side: false,
+        },
+        StaticToolSpec {
+            id: "fs.write_base64",
+            model_name: "fs_write_base64",
+            version: 1,
+            name: "Запись бинарного файла",
+            description: "Создаёт бинарный файл из Base64 (загрузка в workspace).",
+            category: "filesystem",
+            risk: RISK_MEDIUM,
+            approval_policy: "never",
+            permission: "ai.workspace.write",
+            idempotent: false,
+            timeout_seconds: 60,
+            max_output_bytes: 65_536,
+            input_schema: schema_object(
+                json!({
+                    "path": path_property("Относительный путь к файлу."),
+                    "contentBase64": { "type": "string", "maxLength": 11534336 },
+                    "overwrite": { "type": "boolean", "default": false },
+                    "expectedSha256": { "type": "string", "minLength": 64, "maxLength": 64 }
+                }),
+                &["path", "contentBase64"],
             ),
             server_side: false,
         },
@@ -301,6 +357,27 @@ fn static_catalog() -> Vec<StaticToolSpec> {
             server_side: false,
         },
         StaticToolSpec {
+            id: "fs.stat",
+            model_name: "fs_stat",
+            version: 1,
+            name: "Метаданные файла",
+            description: "Возвращает размер, тип и время изменения файла или каталога в workspace.",
+            category: "filesystem",
+            risk: RISK_LOW,
+            approval_policy: "never",
+            permission: "ai.workspace.read",
+            idempotent: true,
+            timeout_seconds: 15,
+            max_output_bytes: 16_384,
+            input_schema: schema_object(
+                json!({
+                    "path": path_property("Относительный путь к файлу или каталогу."),
+                }),
+                &["path"],
+            ),
+            server_side: false,
+        },
+        StaticToolSpec {
             id: "program.run",
             model_name: "program_run",
             version: 1,
@@ -347,6 +424,22 @@ fn static_catalog() -> Vec<StaticToolSpec> {
                 }),
                 &["skillId"],
             ),
+            server_side: true,
+        },
+        StaticToolSpec {
+            id: "skills.list",
+            model_name: "skills_list",
+            version: 1,
+            name: "Список Skills",
+            description: "Возвращает метаданные Skills, назначенных пользователю для текущего workspace.",
+            category: "skills",
+            risk: RISK_LOW,
+            approval_policy: "never",
+            permission: "ai.skills.use",
+            idempotent: true,
+            timeout_seconds: 15,
+            max_output_bytes: 65_536,
+            input_schema: schema_object(json!({}), &[]),
             server_side: true,
         },
     ]
@@ -494,13 +587,31 @@ pub fn authorize_workspace(
 pub fn default_workspace_tools() -> Vec<String> {
     let mut tools: Vec<String> = catalog()
         .into_iter()
-        .filter(|tool| matches!(tool.risk.as_str(), RISK_LOW | RISK_MEDIUM))
+        .filter(|tool| !tool.ui_only && matches!(tool.risk.as_str(), RISK_LOW | RISK_MEDIUM))
         .map(|tool| tool.id.to_owned())
         .collect();
     if !tools.iter().any(|id| id == "skill.load") {
         tools.push("skill.load".to_owned());
     }
     tools
+}
+
+/// Инструменты из набора по умолчанию, которых ещё нет в allowlist workspace.
+///
+/// Используется административным «обновлением совместимости»: старые
+/// workspace создавались до появления `fs.stat`/`skills.list` и не содержат их
+/// в `allowed_tools`. Автоматического расширения прав нет — администратор
+/// явно запускает операцию, и добавляются только безопасные инструменты.
+pub fn missing_safe_tools(workspace: &WorkspaceRow) -> Vec<String> {
+    missing_safe_tools_from(&workspace.allowed_tools)
+}
+
+pub(crate) fn missing_safe_tools_from(allowed_tools: &[String]) -> Vec<String> {
+    let allowed: HashSet<&str> = allowed_tools.iter().map(String::as_str).collect();
+    default_workspace_tools()
+        .into_iter()
+        .filter(|id| !allowed.contains(id.as_str()))
+        .collect()
 }
 
 /// Инструменты, доступные агенту в задаче.
@@ -513,8 +624,12 @@ pub async fn allowed_for_task(
     let rows = policies(db).await?;
     let mut result = Vec::new();
     for spec in catalog() {
+        if spec.ui_only {
+            continue;
+        }
         if spec.server_side {
-            if include_skills && spec.id == "skill.load" && allowed.contains(spec.id.as_str()) {
+            let gated = spec.id.starts_with("skill");
+            if allowed.contains(spec.id.as_str()) && (!gated || include_skills) {
                 if let Some(policy) = rows.iter().find(|row| row.tool_id == spec.id) {
                     result.push((spec, policy.clone()));
                 }
@@ -536,7 +651,7 @@ pub async fn public_catalog(db: &PgPool) -> ApiResult<Value> {
     let rows = policies(db).await?;
     let items: Vec<Value> = catalog()
         .into_iter()
-        .filter(|spec| !spec.server_side)
+        .filter(|spec| !spec.server_side && !spec.ui_only)
         .map(|spec| {
             let policy = rows.iter().find(|row| row.tool_id == spec.id);
             json!({
@@ -577,4 +692,63 @@ pub async fn log_tool_event(
     .execute(db)
     .await;
     let _ = models::now();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_workspace_tools_include_new_safe_tools() {
+        let tools = default_workspace_tools();
+        assert!(tools.iter().any(|id| id == "fs.stat"));
+        assert!(tools.iter().any(|id| id == "skills.list"));
+        assert!(tools.iter().any(|id| id == "skill.load"));
+        assert!(!tools.iter().any(|id| id == "fs.delete"));
+        assert!(!tools.iter().any(|id| id == "program.run"));
+    }
+
+    #[test]
+    fn missing_safe_tools_is_additive_and_preserves_explicit_choices() {
+        // Старый workspace: без fs.stat и skills.list, но с явно выданным fs.delete.
+        let allowed = vec![
+            "fs.read".to_owned(),
+            "fs.write".to_owned(),
+            "fs.delete".to_owned(),
+            "skill.load".to_owned(),
+        ];
+        let missing = missing_safe_tools_from(&allowed);
+        assert!(missing.iter().any(|id| id == "fs.stat"));
+        assert!(missing.iter().any(|id| id == "skills.list"));
+        assert!(!missing.iter().any(|id| id == "fs.read"));
+        assert!(!missing.iter().any(|id| id == "fs.delete"));
+        // Опасные инструменты не попадают в «безопасное» обновление.
+        assert!(!missing.iter().any(|id| id == "program.run"));
+    }
+
+    #[test]
+    fn binary_tools_are_ui_only_and_never_agent_defaults() {
+        let read = by_id("fs.read_base64").expect("fs.read_base64");
+        let write = by_id("fs.write_base64").expect("fs.write_base64");
+        assert!(read.ui_only);
+        assert!(write.ui_only);
+        let defaults = default_workspace_tools();
+        assert!(!defaults.iter().any(|id| id == "fs.read_base64"));
+        assert!(!defaults.iter().any(|id| id == "fs.write_base64"));
+    }
+
+    #[test]
+    fn write_schema_accepts_expected_sha256() {
+        let spec = by_id("fs.write").expect("fs.write");
+        validate_arguments(
+            &spec.input_schema,
+            &json!({
+                "path": "a.txt",
+                "content": "x",
+                "overwrite": true,
+                "expectedSha256": "a".repeat(64),
+            }),
+        )
+        .expect("schema accepts expectedSha256");
+    }
 }

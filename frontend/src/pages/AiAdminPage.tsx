@@ -341,6 +341,15 @@ export function AiAdminPage() {
     onError: (error) => toast(errorMessage(error), 'error'),
   });
 
+  const grantDefaultTools = useMutation({
+    mutationFn: (id: string) => aiApi.grantDefaultWorkspaceTools(id),
+    onSuccess: async () => {
+      toast('Безопасные инструменты добавлены в workspace', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['ai-admin-workspaces'] });
+    },
+    onError: (error) => toast(errorMessage(error), 'error'),
+  });
+
   const runtimeAction = useMutation({
     mutationFn: async ({ id, action }: { id: string; action: string }) => {
       if (action === 'revoke') return aiApi.revokeRuntime(id);
@@ -889,6 +898,25 @@ export function AiAdminPage() {
                   }
                 />
               </div>
+              {(workspace.missingSafeTools?.length ?? 0) > 0 ? (
+                <Alert tone="warn">
+                  <div className="row row--between" style={{ gap: 12 }}>
+                    <span>
+                      Workspace создан до появления новых инструментов и не содержит:{' '}
+                      <code>{workspace.missingSafeTools?.join(', ')}</code>. Права
+                      автоматически не расширяются.
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      loading={grantDefaultTools.isPending}
+                      onClick={() => grantDefaultTools.mutate(workspace.id)}
+                    >
+                      Добавить безопасные
+                    </Button>
+                  </div>
+                </Alert>
+              ) : null}
               <div className="row" style={{ marginTop: 12 }}>
                 <Button
                   size="sm"
@@ -1363,7 +1391,8 @@ export function AiAdminPage() {
                 </span>
                 <span className="tiny muted">
                   parallel {quota.maxConcurrentTasks} · day {quota.maxTasksPerDay} · tools{' '}
-                  {quota.maxToolCallsPerTask} · task {quota.maxTaskSeconds}s
+                  {quota.maxToolCallsPerTask} · iterations {quota.maxIterations} · task{' '}
+                  {quota.maxTaskSeconds}s
                 </span>
                 <Button
                   size="sm"
@@ -1375,6 +1404,7 @@ export function AiAdminPage() {
                       maxTasksPerDay: quota.maxTasksPerDay,
                       maxToolCallsPerTask: quota.maxToolCallsPerTask,
                       maxTaskSeconds: quota.maxTaskSeconds,
+                      maxIterations: quota.maxIterations,
                       maxStorageBytes: quota.maxStorageBytes,
                       maxFiles: quota.maxFiles,
                       maxFileBytes: quota.maxFileBytes,
@@ -1991,6 +2021,7 @@ export function AiAdminPage() {
               ['maxConcurrentTasks', 'Параллельных задач'],
               ['maxTasksPerDay', 'Задач в сутки'],
               ['maxToolCallsPerTask', 'Tool calls на задачу'],
+              ['maxIterations', 'Итераций модели на задачу'],
               ['maxTaskSeconds', 'Таймаут задачи, с'],
               ['maxStorageBytes', 'Storage quota, байт'],
               ['maxFiles', 'Максимум файлов'],

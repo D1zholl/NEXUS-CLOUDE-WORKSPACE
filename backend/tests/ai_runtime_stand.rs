@@ -147,18 +147,66 @@ impl FakePoly {
                                 messages.iter().any(|message| message["role"] == "tool")
                             })
                             .unwrap_or(false);
-                        if !stream_flag && prompt.contains("cancel long") {
+                        if prompt.contains("cancel long") {
                             // Долгий ответ: Runtime должен прервать его по cancel.
                             tokio::time::sleep(Duration::from_secs(30)).await;
                         }
                         if stream_flag {
-                            let sse = concat!(
-                                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n",
-                                "data: {\"choices\":[{\"delta\":{\"content\":\" from stand\"},\"finish_reason\":null}]}\n\n",
-                                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"total_tokens\":7}}\n\n",
-                                "data: [DONE]\n\n",
-                            );
-                            ("text/event-stream", sse.to_owned())
+                            let has_tools = request["tools"]
+                                .as_array()
+                                .map(|tools| !tools.is_empty())
+                                .unwrap_or(false);
+                            if has_tools && !has_tool_result {
+                                let arguments = serde_json::to_string(&json!({
+                                    "path": "stand.txt",
+                                    "content": "created by runtime stand",
+                                    "overwrite": true
+                                }))
+                                .unwrap();
+                                let delta = json!({
+                                    "choices": [{
+                                        "delta": {
+                                            "tool_calls": [{
+                                                "index": 0,
+                                                "id": "call_stand_1",
+                                                "type": "function",
+                                                "function": {
+                                                    "name": "fs_write",
+                                                    "arguments": arguments
+                                                }
+                                            }]
+                                        },
+                                        "finish_reason": null
+                                    }]
+                                });
+                                let done = json!({
+                                    "choices": [{
+                                        "delta": {},
+                                        "finish_reason": "tool_calls"
+                                    }],
+                                    "usage": { "total_tokens": 15 }
+                                });
+                                let sse = format!(
+                                    "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                                    delta, done
+                                );
+                                ("text/event-stream", sse)
+                            } else if has_tools {
+                                let sse = concat!(
+                                    "data: {\"choices\":[{\"delta\":{\"content\":\"Файл записан и проверен.\"},\"finish_reason\":null}]}\n\n",
+                                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"total_tokens\":20}}\n\n",
+                                    "data: [DONE]\n\n",
+                                );
+                                ("text/event-stream", sse.to_owned())
+                            } else {
+                                let sse = concat!(
+                                    "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n",
+                                    "data: {\"choices\":[{\"delta\":{\"content\":\" from stand\"},\"finish_reason\":null}]}\n\n",
+                                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"total_tokens\":7}}\n\n",
+                                    "data: [DONE]\n\n",
+                                );
+                                ("text/event-stream", sse.to_owned())
+                            }
                         } else if has_tool_result {
                             (
                                 "application/json",

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowUpDown,
@@ -16,6 +23,7 @@ import {
   LayoutGrid,
   Link2,
   List,
+  ListChecks,
   Loader2,
   Pencil,
   RefreshCw,
@@ -60,6 +68,7 @@ import {
 } from '../../lib/cloudUpload';
 import { realtime } from '../../lib/realtime';
 import { applyDownloadEvent, dismissDownload, type DownloadItem } from '../../lib/realtimeEvents';
+import { usePresence } from '../../lib/usePresence';
 import { useTransfers } from '../../stores/transfers';
 import { CloudPreviewModal } from '../../components/CloudPreview';
 import { useCan } from '../../stores/auth';
@@ -67,6 +76,7 @@ import { toast } from '../../stores/ui';
 
 import { FileGlyph } from './fileIcon';
 import { SharesView } from './SharesView';
+import { useFileSelection, useSelectionGestures } from './selection';
 import { CloudThumb } from './thumbnail';
 import {
   EXPIRY_OPTIONS,
@@ -100,7 +110,8 @@ export function CloudStoragePage() {
   const [typeFilter, setTypeFilter] = useState('all');
   const [page, setPage] = useState(1);
   const [layout, setLayout] = useState<Layout>('grid');
-  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const selection = useFileSelection();
+  const { disableSelectionMode, isSelected, selectAll } = selection;
 
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -111,14 +122,17 @@ export function CloudStoragePage() {
   const [folderBusy, setFolderBusy] = useState(false);
   const [renameTarget, setRenameTarget] = useState<CloudEntry | null>(null);
   const [renameValue, setRenameValue] = useState('');
-  const [moveTarget, setMoveTarget] = useState<CloudEntry | null>(null);
+  /** Одна модалка обслуживает и одиночное, и массовое перемещение. */
+  const [moveTargets, setMoveTargets] = useState<CloudEntry[]>([]);
   const [moveParent, setMoveParent] = useState<string | null>(null);
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const [shareTarget, setShareTarget] = useState<CloudEntry | null>(null);
   const [previewTarget, setPreviewTarget] = useState<CloudEntry | null>(null);
   const [purgeTarget, setPurgeTarget] = useState<CloudEntry | null>(null);
   const [confirmEmptyTrash, setConfirmEmptyTrash] = useState(false);
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [trashBusy, setTrashBusy] = useState(false);
+  const [restoreBusy, setRestoreBusy] = useState(false);
   const [shareForm, setShareForm] = useState({
     expiresInHours: 24 * 7,
     password: '',
@@ -133,6 +147,18 @@ export function CloudStoragePage() {
     password: boolean;
     authOnly: boolean;
   } | null>(null);
+
+  const [bulkShareOpen, setBulkShareOpen] = useState(false);
+  const [bulkShareForm, setBulkShareForm] = useState({
+    expiresInHours: 24 * 7,
+    password: '',
+    authOnly: false,
+  });
+  const [bulkShareResults, setBulkShareResults] = useState<
+    Array<{ entryId: string; name: string; url: string }>
+  >([]);
+  const [bulkShareFailed, setBulkShareFailed] = useState(0);
+  const [bulkShareBusy, setBulkShareBusy] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -189,9 +215,10 @@ export function CloudStoragePage() {
     void queryClient.invalidateQueries({ queryKey: ['cloud-shares'] });
   }, [queryClient]);
 
+  // При навигации между папками, страницами и разделами выделение сбрасывается.
   useEffect(() => {
-    setSelection(new Set());
-  }, [view, parentId, search, page, typeFilter]);
+    disableSelectionMode();
+  }, [view, parentId, search, page, typeFilter, disableSelectionMode]);
 
   // «Показать в папке» из плавающего виджета: открываем каталог, в который
   // сервер фактически сохранил файл, даже если пользователь ушёл со страницы.
@@ -256,14 +283,26 @@ export function CloudStoragePage() {
   };
 
   const saveMove = async (): Promise<void> => {
-    if (!moveTarget) return;
-    try {
-      await api.updateCloudEntry(moveTarget.id, { parentId: moveParent });
-      setMoveTarget(null);
-      invalidate();
-      toast('Запись перемещена.', 'success');
-    } catch (error) {
-      toast(errorMessage(error), 'error');
+    if (moveTargets.length === 0) return;
+    const targets = moveTargets;
+    setMoveTargets([]);
+    selection.disableSelectionMode();
+    let failed = 0;
+    for (const target of targets) {
+      try {
+        await api.updateCloudEntry(target.id, { parentId: moveParent });
+      } catch {
+        failed += 1;
+      }
+    }
+    invalidate();
+    if (failed === 0) {
+      toast(
+        targets.length > 1 ? `Перемещено записей: ${targets.length}.` : 'Запись перемещена.',
+        'success',
+      );
+    } else {
+      toast(`Не удалось переместить записей: ${failed}.`, 'error');
     }
   };
 
@@ -284,27 +323,6 @@ export function CloudStoragePage() {
     } catch (error) {
       toast(errorMessage(error), 'error');
     }
-  };
-
-  const trashSelected = async (): Promise<void> => {
-    setTrashBusy(true);
-    let failed = 0;
-    for (const id of selection) {
-      try {
-        await api.trashCloudEntry(id);
-      } catch {
-        failed += 1;
-      }
-    }
-    setTrashBusy(false);
-    setSelection(new Set());
-    invalidate();
-    toast(
-      failed === 0
-        ? 'Выбранные записи перемещены в корзину.'
-        : `Перемещено, но ${failed} записей не удалось обработать.`,
-      failed === 0 ? 'success' : 'warning',
-    );
   };
 
   const restoreOne = async (id: string): Promise<void> => {
@@ -500,13 +518,10 @@ export function CloudStoragePage() {
     }
   };
 
-  const toggleSelect = (id: string): void => {
-    setSelection((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const activateEntry = (entry: CloudEntry): void => {
+    if (entry.entryType === 'folder') openFolder(entry);
+    else if (canPreview(entry)) setPreviewTarget(entry);
+    else if (canDownload) startDownload(entry);
   };
 
   const openShare = (entry: CloudEntry): void => {
@@ -521,19 +536,221 @@ export function CloudStoragePage() {
     });
   };
 
-  const items = list.data?.items ?? [];
+  const items = useMemo(() => list.data?.items ?? [], [list.data]);
   const usage = list.data?.usage;
   const breadcrumb = list.data?.breadcrumb ?? [];
   const perPage = list.data?.perPage ?? 48;
   const total = list.data?.total ?? 0;
   const maxPage = Math.max(1, Math.ceil(total / perPage));
-  const allSelected = items.length > 0 && items.every((entry) => selection.has(entry.id));
+  const allSelected = items.length > 0 && items.every((entry) => selection.isSelected(entry.id));
+  const selectedEntries = items.filter((entry) => selection.isSelected(entry.id));
+  const selectedFiles = selectedEntries.filter((entry) => entry.entryType === 'file');
+  const allStarred = selectedEntries.length > 0 && selectedEntries.every((entry) => entry.starred);
+  const canSelect = view !== 'shares' && items.length > 0;
   const activeShares = (shares.data ?? []).filter((share) => share.active);
+
+  /* ---------------------------- массовые действия --------------------------- */
+
+  const toggleSelectAll = (): void => {
+    if (allSelected) selection.disableSelectionMode();
+    else selection.selectAll(items.map((entry) => entry.id));
+  };
+
+  const starSelected = async (): Promise<void> => {
+    if (selectedEntries.length === 0) return;
+    const starred = !allStarred;
+    let failed = 0;
+    for (const entry of selectedEntries) {
+      try {
+        await api.updateCloudEntry(entry.id, { starred });
+      } catch {
+        failed += 1;
+      }
+    }
+    invalidate();
+    if (failed === 0) {
+      toast(
+        starred
+          ? `Добавлено в избранное: ${selectedEntries.length}.`
+          : `Убрано из избранного: ${selectedEntries.length}.`,
+        'success',
+      );
+    } else {
+      toast(`Не удалось обновить записей: ${failed}.`, 'error');
+    }
+  };
+
+  const deleteSelectedConfirmed = async (): Promise<void> => {
+    const ids = Array.from(selection.selectedIds);
+    setConfirmBulkDelete(false);
+    if (ids.length === 0) return;
+    setTrashBusy(true);
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        if (view === 'trash') await api.purgeCloudEntry(id);
+        else await api.trashCloudEntry(id);
+      } catch {
+        failed += 1;
+      }
+    }
+    setTrashBusy(false);
+    selection.disableSelectionMode();
+    invalidate();
+    const action = view === 'trash' ? 'Удалено безвозвратно' : 'Перемещено в корзину';
+    toast(
+      failed === 0
+        ? `${action}: ${ids.length}.`
+        : `${action}, но ${failed} записей не удалось обработать.`,
+      failed === 0 ? 'success' : 'warning',
+    );
+  };
+
+  const restoreSelected = async (): Promise<void> => {
+    const entries = selectedEntries;
+    if (entries.length === 0) return;
+    setRestoreBusy(true);
+    let failed = 0;
+    for (const entry of entries) {
+      try {
+        await api.restoreCloudEntry(entry.id);
+      } catch {
+        failed += 1;
+      }
+    }
+    setRestoreBusy(false);
+    selection.disableSelectionMode();
+    invalidate();
+    const restored = entries.length - failed;
+    if (failed === 0) {
+      toast(`Восстановлено: ${restored}.`, 'success');
+    } else {
+      toast(`Восстановлено: ${restored}, не удалось: ${failed}.`, 'warning');
+    }
+  };
+
+  const openBulkMove = (): void => {
+    if (selectedEntries.length === 0) return;
+    setMoveTargets(selectedEntries);
+    setMoveParent(parentId);
+  };
+
+  const openBulkShare = (): void => {
+    if (selectedFiles.length === 0) return;
+    setBulkShareForm({
+      expiresInHours: shareTtlHours,
+      password: '',
+      authOnly: false,
+    });
+    setBulkShareResults([]);
+    setBulkShareFailed(0);
+    setBulkShareOpen(true);
+  };
+
+  const createBulkShares = async (): Promise<void> => {
+    if (selectedFiles.length === 0) return;
+    setBulkShareBusy(true);
+    const results: Array<{ entryId: string; name: string; url: string }> = [];
+    let failed = 0;
+    for (const entry of selectedFiles) {
+      try {
+        const created = await api.createCloudShare(
+          {
+            entryId: entry.id,
+            expiresInHours: bulkShareForm.expiresInHours,
+            password: bulkShareForm.password.trim() || undefined,
+            authOnly: bulkShareForm.authOnly,
+          },
+          newIdempotencyKey(),
+        );
+        results.push({ entryId: entry.id, name: entry.name, url: created.url });
+      } catch {
+        failed += 1;
+      }
+    }
+    setBulkShareResults(results);
+    setBulkShareFailed(failed);
+    setBulkShareBusy(false);
+    void queryClient.invalidateQueries({ queryKey: ['cloud-shares'] });
+    if (results.length > 0) toast(`Создано ссылок: ${results.length}.`, 'success');
+    if (failed > 0) toast(`Не удалось создать ссылок: ${failed}.`, 'error');
+  };
+
+  const copyBulkLinks = async (): Promise<void> => {
+    const text = bulkShareResults.map((result) => result.url).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Ссылки скопированы.', 'success');
+    } catch {
+      toast('Скопируйте ссылки вручную.', 'warning');
+    }
+  };
+
+  /* ------------------------------ жесты выбора ------------------------------ */
+
+  const gestures = useSelectionGestures({
+    enabled: canSelect,
+    isSelectionMode: selection.isSelectionMode,
+    selectedIds: selection.selectedIds,
+    onEnableSelectionMode: selection.enableSelectionMode,
+    onToggleSelection: selection.toggleSelection,
+    onSetSelection: selection.setSelected,
+    onExitSelectionMode: selection.disableSelectionMode,
+  });
+
+  // Ctrl+A / Cmd+A выбирает все файлы текущей страницы, повторное нажатие снимает.
+  useEffect(() => {
+    if (!canSelect) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      if (items.every((entry) => isSelected(entry.id))) {
+        disableSelectionMode();
+      } else {
+        selectAll(items.map((entry) => entry.id));
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [canSelect, items, isSelected, selectAll, disableSelectionMode]);
+
+  const selectionPanel = usePresence(selection.count > 0, 160);
+  /** Во время exit-анимации панель показывает последнее непустое количество. */
+  const lastSelectionCount = useRef(0);
+  if (selection.count > 0) lastSelectionCount.current = selection.count;
+  const selectionCount = selection.count || lastSelectionCount.current;
+
+  const handleEntryClick = (entry: CloudEntry, event: ReactMouseEvent): void => {
+    if (gestures.isClickSuppressed()) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('button, a, input, select, textarea, label')) return;
+    if (selection.isSelectionMode) selection.toggleSelection(entry.id);
+    else activateEntry(entry);
+  };
+
+  const handleEntryClickCapture = (entry: CloudEntry, event: ReactMouseEvent): void => {
+    if (!selection.isSelectionMode || gestures.isClickSuppressed()) return;
+    // В режиме выделения любая точка карточки переключает выбор, включая
+    // вложенные кнопки действий.
+    event.preventDefault();
+    event.stopPropagation();
+    selection.toggleSelection(entry.id);
+  };
 
   const folders = useQuery({
     queryKey: ['cloud-folders'],
     queryFn: () => api.listCloud({ view: 'all', entryType: 'folder', perPage: 100 }),
-    enabled: moveTarget !== null,
+    enabled: moveTargets.length > 0,
   });
 
   const shareList = useMemo(
@@ -702,6 +919,28 @@ export function CloudStoragePage() {
               За {RECENT_DAYS} дней
             </Badge>
           ) : null}
+          {view === 'trash' && items.length > 0 && canDelete ? (
+            <Button
+              size="sm"
+              variant="danger"
+              icon={<Trash2 aria-hidden="true" />}
+              onClick={() => setConfirmEmptyTrash(true)}
+            >
+              Очистить корзину
+            </Button>
+          ) : null}
+          {canSelect ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<ListChecks aria-hidden="true" />}
+              data-testid="cloud-select-all"
+              title="Выбрать все файлы на странице (Ctrl+A)"
+              onClick={toggleSelectAll}
+            >
+              {allSelected ? 'Снять выделение' : 'Выбрать всё'}
+            </Button>
+          ) : null}
           <div className="grow" />
           <div className="segmented" role="group" aria-label="Вид списка">
             <button
@@ -839,171 +1078,233 @@ export function CloudStoragePage() {
         </nav>
       ) : null}
 
-      {selection.size > 0 ? (
-        <div className="cloud-selection" role="toolbar" aria-label="Действия с выбранными файлами">
-          <span>
-            Выбрано: <strong>{selection.size}</strong>
+      {selectionPanel.mounted ? (
+        <div
+          className={`cloud-selection${selectionPanel.closing ? ' cloud-selection--closing' : ''}`}
+          role="toolbar"
+          aria-label="Действия с выбранными файлами"
+          data-testid="cloud-selection-panel"
+        >
+          <span className="cloud-selection__count" aria-live="polite">
+            Выбрано: <strong>{selectionCount}</strong>
           </span>
           <div className="grow" />
+          {view !== 'trash' ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Star aria-hidden="true" fill={allStarred ? 'currentColor' : 'none'} />}
+              disabled={selectedEntries.length === 0}
+              onClick={() => void starSelected()}
+            >
+              {allStarred ? 'Убрать из избранного' : 'В избранное'}
+            </Button>
+          ) : null}
+          {view !== 'trash' ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<FolderInput aria-hidden="true" />}
+              disabled={selectedEntries.length === 0}
+              onClick={openBulkMove}
+            >
+              Переместить
+            </Button>
+          ) : null}
+          {canShare && view !== 'trash' ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Share2 aria-hidden="true" />}
+              disabled={selectedFiles.length === 0}
+              onClick={openBulkShare}
+            >
+              Поделиться
+            </Button>
+          ) : null}
           {canDownload ? (
             <Button
               size="sm"
               icon={<FileArchive aria-hidden="true" />}
               loading={busyExport !== null}
-              onClick={() => void runExport([...selection])}
+              onClick={() => void runExport(Array.from(selection.selectedIds))}
             >
               Скачать ZIP
             </Button>
           ) : null}
-          {canDelete && view !== 'trash' ? (
+          {canDelete && view === 'trash' ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<RotateCcw aria-hidden="true" />}
+              loading={restoreBusy}
+              disabled={selectedEntries.length === 0}
+              data-testid="cloud-bulk-restore"
+              onClick={() => void restoreSelected()}
+            >
+              Восстановить
+            </Button>
+          ) : null}
+          {canDelete ? (
             <Button
               size="sm"
               variant="ghost"
               icon={<Trash2 aria-hidden="true" />}
               loading={trashBusy}
-              onClick={() => void trashSelected()}
+              data-testid="cloud-bulk-delete"
+              onClick={() => setConfirmBulkDelete(true)}
             >
-              В корзину
+              {view === 'trash' ? 'Удалить навсегда' : 'Удалить'}
             </Button>
           ) : null}
-          <Button size="sm" variant="ghost" onClick={() => setSelection(new Set())}>
-            Снять
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<X aria-hidden="true" />}
+            data-testid="cloud-clear-selection"
+            onClick={selection.disableSelectionMode}
+          >
+            Отмена
           </Button>
         </div>
       ) : null}
 
       {busyExport || archiveJobs.length > 0 || downloads.length > 0 ? (
         <NoticeStack label="Скачивания и архивы">
-        {busyExport ? (
-          <div className="notice-card cloud-export">
-            <Loader2 className="spin" aria-hidden="true" />
-            <div className="grow">
-              <div className="row row--between" style={{ fontSize: 12 }}>
-                <span>Формирование архива</span>
-                <span className="mono">{Math.round(busyExport.progress)}%</span>
-              </div>
-              <div className="meter" aria-hidden="true">
-                <div
-                  className="meter__fill"
-                  style={{ width: `${Math.min(100, busyExport.progress)}%` }}
-                />
+          {busyExport ? (
+            <div className="notice-card cloud-export">
+              <Loader2 className="spin" aria-hidden="true" />
+              <div className="grow">
+                <div className="row row--between" style={{ fontSize: 12 }}>
+                  <span>Формирование архива</span>
+                  <span className="mono">{Math.round(busyExport.progress)}%</span>
+                </div>
+                <div className="meter" aria-hidden="true">
+                  <div
+                    className="meter__fill"
+                    style={{ width: `${Math.min(100, busyExport.progress)}%` }}
+                  />
+                </div>
               </div>
             </div>
-          </div>
-        ) : null}
+          ) : null}
 
-        {archiveJobs.length > 0 ? (
-          <div className="notice-card">
-            <SectionTitle
-              title="Архивы"
-              meta={`${archiveJobs.length} ${pluralize(archiveJobs.length, 'архив', 'архива', 'архивов')} · хранятся ${formatTtlHours(config.data?.exportTtlHours ?? 6)}`}
-            />
-            <div className="stack" style={{ gap: 8 }}>
-              {archiveJobs.map((job) => (
-                <div className="row row--between" key={job.id} style={{ gap: 12 }}>
-                  <div className="grow" style={{ minWidth: 0 }}>
-                    <div className="truncate">
-                      Архив от {formatDate(job.finishedAt ?? job.createdAt)}
+          {archiveJobs.length > 0 ? (
+            <div className="notice-card">
+              <SectionTitle
+                title="Архивы"
+                meta={`${archiveJobs.length} ${pluralize(archiveJobs.length, 'архив', 'архива', 'архивов')} · хранятся ${formatTtlHours(config.data?.exportTtlHours ?? 6)}`}
+              />
+              <div className="stack" style={{ gap: 8 }}>
+                {archiveJobs.map((job) => (
+                  <div className="row row--between" key={job.id} style={{ gap: 12 }}>
+                    <div className="grow" style={{ minWidth: 0 }}>
+                      <div className="truncate">
+                        Архив от {formatDate(job.finishedAt ?? job.createdAt)}
+                      </div>
+                      <div className="tiny muted">
+                        {job.status === 'completed'
+                          ? `готов · ${formatDate(job.createdAt)}`
+                          : `ошибка: ${job.error ?? 'не удалось сформировать'}`}
+                      </div>
                     </div>
-                    <div className="tiny muted">
-                      {job.status === 'completed'
-                        ? `готов · ${formatDate(job.createdAt)}`
-                        : `ошибка: ${job.error ?? 'не удалось сформировать'}`}
-                    </div>
-                  </div>
-                  {job.status === 'completed' ? (
+                    {job.status === 'completed' ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={<Download aria-hidden="true" />}
+                        onClick={() => triggerDownload(api.cloudExportUrl(job.id))}
+                      >
+                        Скачать
+                      </Button>
+                    ) : null}
                     <Button
                       size="sm"
                       variant="ghost"
-                      icon={<Download aria-hidden="true" />}
-                      onClick={() => triggerDownload(api.cloudExportUrl(job.id))}
+                      icon={<Trash2 aria-hidden="true" />}
+                      onClick={() => void deleteArchive(job.id)}
                     >
-                      Скачать
+                      Удалить архив
                     </Button>
-                  ) : null}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    icon={<Trash2 aria-hidden="true" />}
-                    onClick={() => void deleteArchive(job.id)}
-                  >
-                    Удалить архив
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {downloads.length > 0 ? (
-          <div className="notice-card">
-            <div className="row row--between" style={{ marginBottom: 10 }}>
-              <SectionTitle
-                title="Скачивание"
-                meta={`${downloads.length} ${pluralize(downloads.length, 'файл', 'файла', 'файлов')}`}
-              />
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() =>
-                  setDownloads((current) => current.filter((item) => item.state === 'active'))
-                }
-              >
-                Очистить завершённые
-              </Button>
-            </div>
-            <div className="stack" style={{ gap: 10 }}>
-              {downloads.map((item) => {
-                const percent = Math.min(100, Math.max(0, item.percent));
-                return (
-                  <div className="upload-item" key={item.entryId}>
-                    <div className="row row--between" style={{ gap: 12 }}>
-                      <span className="truncate" title={item.name}>
-                        {item.name}
-                      </span>
-                      <span className="mono tiny">
-                        {formatBytes(item.transferred)} / {formatBytes(item.size)}
-                      </span>
-                    </div>
-                    <div className="meter" aria-hidden="true">
-                      <div
-                        className={`meter__fill${item.state === 'failed' ? ' meter__fill--warn' : ''}`}
-                        style={{ width: `${percent}%` }}
-                      />
-                    </div>
-                    <div className="row row--between" style={{ gap: 10 }}>
-                      <span className="tiny muted">
-                        {item.state === 'done'
-                          ? 'Скачано'
-                          : item.state === 'failed'
-                            ? (item.message ?? 'Скачивание прервано.')
-                            : `Скачивание ${Math.round(percent)}%`}
-                      </span>
-                      {item.state === 'active' ? null : (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          iconOnly
-                          aria-label="Убрать из списка"
-                          onClick={() =>
-                            setDownloads((current) => dismissDownload(current, item.entryId))
-                          }
-                        >
-                          <X aria-hidden="true" />
-                        </Button>
-                      )}
-                    </div>
                   </div>
-                );
-              })}
+                ))}
+              </div>
             </div>
-          </div>
-        ) : null}
+          ) : null}
+
+          {downloads.length > 0 ? (
+            <div className="notice-card">
+              <div className="row row--between" style={{ marginBottom: 10 }}>
+                <SectionTitle
+                  title="Скачивание"
+                  meta={`${downloads.length} ${pluralize(downloads.length, 'файл', 'файла', 'файлов')}`}
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() =>
+                    setDownloads((current) => current.filter((item) => item.state === 'active'))
+                  }
+                >
+                  Очистить завершённые
+                </Button>
+              </div>
+              <div className="stack" style={{ gap: 10 }}>
+                {downloads.map((item) => {
+                  const percent = Math.min(100, Math.max(0, item.percent));
+                  return (
+                    <div className="upload-item" key={item.entryId}>
+                      <div className="row row--between" style={{ gap: 12 }}>
+                        <span className="truncate" title={item.name}>
+                          {item.name}
+                        </span>
+                        <span className="mono tiny">
+                          {formatBytes(item.transferred)} / {formatBytes(item.size)}
+                        </span>
+                      </div>
+                      <div className="meter" aria-hidden="true">
+                        <div
+                          className={`meter__fill${item.state === 'failed' ? ' meter__fill--warn' : ''}`}
+                          style={{ width: `${percent}%` }}
+                        />
+                      </div>
+                      <div className="row row--between" style={{ gap: 10 }}>
+                        <span className="tiny muted">
+                          {item.state === 'done'
+                            ? 'Скачано'
+                            : item.state === 'failed'
+                              ? (item.message ?? 'Скачивание прервано.')
+                              : `Скачивание ${Math.round(percent)}%`}
+                        </span>
+                        {item.state === 'active' ? null : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            iconOnly
+                            aria-label="Убрать из списка"
+                            onClick={() =>
+                              setDownloads((current) => dismissDownload(current, item.entryId))
+                            }
+                          >
+                            <X aria-hidden="true" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
         </NoticeStack>
       ) : null}
 
       <div
-        className={`cloud-drop${dragActive ? ' cloud-drop--active' : ''}`}
+        ref={gestures.containerRef}
+        className={`cloud-drop${dragActive ? ' cloud-drop--active' : ''}${
+          gestures.isDragging ? ' cloud-drop--dragging' : ''
+        }`}
+        {...gestures.containerProps}
         onDragOver={(event) => {
           if (!canUpload || view === 'trash') return;
           event.preventDefault();
@@ -1016,384 +1317,406 @@ export function CloudStoragePage() {
           if (canUpload && event.dataTransfer.files) enqueueFiles(event.dataTransfer.files);
         }}
       >
+        {gestures.band ? (
+          <div
+            className="cloud-select-band"
+            aria-hidden="true"
+            style={{
+              left: gestures.band.left,
+              top: gestures.band.top,
+              width: gestures.band.width,
+              height: gestures.band.height,
+            }}
+          />
+        ) : null}
         <div className="tab-panel" key={`${view}-${layout}`}>
           {view === 'shares' ? (
             <SharesView
-            shares={shares.data ?? []}
-            loading={shares.isLoading}
-            error={shares.isError ? errorMessage(shares.error) : null}
-            canShare={canShare}
-            onRevoke={(id) => revoke(id)}
-          />
-        ) : list.isLoading ? (
-          <div className="card">
-            <LoadingInline label="Загрузка файлов" />
-          </div>
-        ) : list.isError ? (
-          <Alert tone="danger">Не удалось загрузить список: {errorMessage(list.error)}</Alert>
-        ) : items.length === 0 ? (
-          <div className="card">
-            <EmptyState
-              icon={<FolderOpen aria-hidden="true" />}
-              title={
-                search
-                  ? 'Ничего не найдено'
+              shares={shares.data ?? []}
+              loading={shares.isLoading}
+              error={shares.isError ? errorMessage(shares.error) : null}
+              canShare={canShare}
+              onRevoke={(id) => revoke(id)}
+            />
+          ) : list.isLoading ? (
+            <div className="card">
+              <LoadingInline label="Загрузка файлов" />
+            </div>
+          ) : list.isError ? (
+            <Alert tone="danger">Не удалось загрузить список: {errorMessage(list.error)}</Alert>
+          ) : items.length === 0 ? (
+            <div className="card">
+              <EmptyState
+                icon={<FolderOpen aria-hidden="true" />}
+                title={
+                  search
+                    ? 'Ничего не найдено'
+                    : view === 'trash'
+                      ? 'Корзина пуста'
+                      : view === 'starred'
+                        ? 'Нет избранных файлов'
+                        : 'Здесь пока пусто'
+                }
+                action={
+                  canUpload && view !== 'trash' ? (
+                    <Button
+                      variant="primary"
+                      icon={<UploadCloud aria-hidden="true" />}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      Загрузить файлы
+                    </Button>
+                  ) : undefined
+                }
+              >
+                {search
+                  ? 'Измените запрос или сбросьте поиск.'
                   : view === 'trash'
-                    ? 'Корзина пуста'
-                    : view === 'starred'
-                      ? 'Нет избранных файлов'
-                      : 'Здесь пока пусто'
-              }
-              action={
-                canUpload && view !== 'trash' ? (
-                  <Button
-                    variant="primary"
-                    icon={<UploadCloud aria-hidden="true" />}
-                    onClick={() => fileInputRef.current?.click()}
+                    ? 'Удалённые записи будут появляться здесь до окончательной очистки.'
+                    : 'Перетащите файлы в эту область или выберите их через кнопку загрузки.'}
+              </EmptyState>
+            </div>
+          ) : layout === 'grid' ? (
+            <div className="cloud-grid">
+              {items.map((entry) => {
+                const selected = selection.isSelected(entry.id);
+                const entryShares = sharesByEntry.get(entry.id) ?? [];
+                const showThumb = entry.entryType === 'file' && isImageFile(entry.name);
+                return (
+                  <article
+                    key={entry.id}
+                    className={`cloud-card${selected ? ' cloud-card--selected' : ''}${
+                      selection.isSelectionMode ? ' cloud-card--selection-mode' : ''
+                    }`}
+                    data-testid="cloud-card"
+                    data-entry-id={entry.id}
+                    data-entry-name={entry.name}
+                    data-entry-type={entry.entryType}
+                    onClickCapture={(event) => handleEntryClickCapture(entry, event)}
+                    onClick={(event) => handleEntryClick(entry, event)}
                   >
-                    Загрузить файлы
-                  </Button>
-                ) : undefined
-              }
-            >
-              {search
-                ? 'Измените запрос или сбросьте поиск.'
-                : view === 'trash'
-                  ? 'Удалённые записи будут появляться здесь до окончательной очистки.'
-                  : 'Перетащите файлы в эту область или выберите их через кнопку загрузки.'}
-            </EmptyState>
-          </div>
-        ) : layout === 'grid' ? (
-          <div className="cloud-grid">
-            {items.map((entry) => {
-              const selected = selection.has(entry.id);
-              const entryShares = sharesByEntry.get(entry.id) ?? [];
-              const showThumb = entry.entryType === 'file' && isImageFile(entry.name);
-              return (
-                <article
-                  key={entry.id}
-                  className={`cloud-card${selected ? ' cloud-card--selected' : ''}`}
-                  data-testid="cloud-card"
-                  data-entry-id={entry.id}
-                  data-entry-name={entry.name}
-                  data-entry-type={entry.entryType}
-                >
-                  <div className="cloud-card__top">
+                    <div className="cloud-card__top">
+                      <button
+                        type="button"
+                        className={`cloud-check${selected ? ' cloud-check--on' : ''}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          selection.toggleSelection(entry.id);
+                        }}
+                        aria-pressed={selected}
+                        aria-label={selected ? 'Снять выбор' : 'Выбрать'}
+                      >
+                        {selected ? <Check aria-hidden="true" /> : null}
+                      </button>
+                      {entry.starred ? (
+                        <Star aria-hidden="true" className="cloud-card__star" />
+                      ) : null}
+                      <div className="grow" />
+                      {entryShares.length > 0 ? (
+                        <Badge tone="info" plain>
+                          <Link2 aria-hidden="true" style={{ width: 11, height: 11 }} />
+                          {entryShares.length}
+                        </Badge>
+                      ) : null}
+                    </div>
+
                     <button
                       type="button"
-                      className={`cloud-check${selected ? ' cloud-check--on' : ''}`}
-                      onClick={() => toggleSelect(entry.id)}
-                      aria-pressed={selected}
-                      aria-label={selected ? 'Снять выбор' : 'Выбрать'}
+                      className={`cloud-card__icon${showThumb ? ' cloud-card__icon--thumb' : ''}`}
+                      onClick={() => activateEntry(entry)}
+                      title={entry.entryType === 'folder' ? 'Открыть папку' : 'Предпросмотр'}
                     >
-                      {selected ? <Check aria-hidden="true" /> : null}
+                      {showThumb ? <CloudThumb entry={entry} /> : <FileGlyph entry={entry} />}
                     </button>
-                    {entry.starred ? (
-                      <Star aria-hidden="true" className="cloud-card__star" />
-                    ) : null}
-                    <div className="grow" />
-                    {entryShares.length > 0 ? (
-                      <Badge tone="info" plain>
-                        <Link2 aria-hidden="true" style={{ width: 11, height: 11 }} />
-                        {entryShares.length}
-                      </Badge>
-                    ) : null}
-                  </div>
 
-                  <button
-                    type="button"
-                    className={`cloud-card__icon${showThumb ? ' cloud-card__icon--thumb' : ''}`}
-                    onClick={() => {
-                      if (entry.entryType === 'folder') openFolder(entry);
-                      else if (canPreview(entry)) setPreviewTarget(entry);
-                      else if (canDownload) startDownload(entry);
-                    }}
-                    title={entry.entryType === 'folder' ? 'Открыть папку' : 'Предпросмотр'}
-                  >
-                    {showThumb ? <CloudThumb entry={entry} /> : <FileGlyph entry={entry} />}
-                  </button>
+                    <button
+                      type="button"
+                      className="cloud-card__name"
+                      onClick={() => activateEntry(entry)}
+                      title={entry.name}
+                    >
+                      {entry.name}
+                    </button>
 
-                  <button
-                    type="button"
-                    className="cloud-card__name"
-                    onClick={() => {
-                      if (entry.entryType === 'folder') openFolder(entry);
-                      else if (canPreview(entry)) setPreviewTarget(entry);
-                    }}
-                    title={entry.name}
-                  >
-                    {entry.name}
-                  </button>
-
-                  <div className="cloud-card__meta">
-                    {entry.entryType === 'folder' ? 'Папка' : formatBytes(entry.sizeBytes)}
-                    <span> · {relativeTime(entry.updatedAt)}</span>
-                  </div>
-                  {view === 'trash' && entry.trashedAt ? (
-                    <div className="tiny muted">
-                      удалится{' '}
-                      {trashDeadline(entry.trashedAt, trashRetentionDays)
-                        ? formatDate(trashDeadline(entry.trashedAt, trashRetentionDays) as string)
-                        : '—'}
+                    <div className="cloud-card__meta">
+                      {entry.entryType === 'folder' ? 'Папка' : formatBytes(entry.sizeBytes)}
+                      <span> · {relativeTime(entry.updatedAt)}</span>
                     </div>
-                  ) : null}
+                    {view === 'trash' && entry.trashedAt ? (
+                      <div className="tiny muted">
+                        удалится{' '}
+                        {trashDeadline(entry.trashedAt, trashRetentionDays)
+                          ? formatDate(trashDeadline(entry.trashedAt, trashRetentionDays) as string)
+                          : '—'}
+                      </div>
+                    ) : null}
 
-                  <div className="cloud-card__actions">
-                    {entry.entryType === 'file' && canDownload ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        iconOnly
-                        title="Скачать"
-                        aria-label="Скачать"
-                        onClick={() => startDownload(entry)}
-                      >
-                        <Download aria-hidden="true" />
-                      </Button>
-                    ) : null}
-                    {entry.entryType === 'file' && canShare && view !== 'trash' ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        iconOnly
-                        title="Ссылка"
-                        aria-label="Создать ссылку"
-                        onClick={() => openShare(entry)}
-                      >
-                        <Share2 aria-hidden="true" />
-                      </Button>
-                    ) : null}
-                    {view === 'trash' ? (
-                      <>
+                    <div className="cloud-card__actions">
+                      {entry.entryType === 'file' && canDownload ? (
                         <Button
                           size="sm"
                           variant="ghost"
                           iconOnly
-                          title="Восстановить"
-                          aria-label="Восстановить"
-                          onClick={() => void restoreOne(entry.id)}
+                          title="Скачать"
+                          aria-label="Скачать"
+                          onClick={() => startDownload(entry)}
                         >
-                          <RotateCcw aria-hidden="true" />
+                          <Download aria-hidden="true" />
                         </Button>
+                      ) : null}
+                      {entry.entryType === 'file' && canShare && view !== 'trash' ? (
                         <Button
                           size="sm"
                           variant="ghost"
                           iconOnly
-                          title="Удалить навсегда"
-                          aria-label="Удалить навсегда"
-                          onClick={() => setPurgeTarget(entry)}
+                          title="Ссылка"
+                          aria-label="Создать ссылку"
+                          onClick={() => openShare(entry)}
                         >
-                          <Trash2 aria-hidden="true" />
+                          <Share2 aria-hidden="true" />
                         </Button>
-                      </>
-                    ) : (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          iconOnly
-                          title={entry.starred ? 'Убрать из избранного' : 'В избранное'}
-                          aria-label="Избранное"
-                          onClick={() => void toggleStar(entry)}
-                        >
-                          <Star aria-hidden="true" fill={entry.starred ? 'currentColor' : 'none'} />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          iconOnly
-                          title="Переименовать"
-                          aria-label="Переименовать"
-                          onClick={() => {
-                            setRenameTarget(entry);
-                            setRenameValue(entry.name);
-                          }}
-                        >
-                          <Pencil aria-hidden="true" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          iconOnly
-                          title="Переместить"
-                          aria-label="Переместить"
-                          onClick={() => {
-                            setMoveTarget(entry);
-                            setMoveParent(entry.parentId);
-                          }}
-                        >
-                          <FolderInput aria-hidden="true" />
-                        </Button>
-                        {canDelete ? (
+                      ) : null}
+                      {view === 'trash' ? (
+                        <>
                           <Button
                             size="sm"
                             variant="ghost"
                             iconOnly
-                            title="В корзину"
-                            aria-label="В корзину"
-                            onClick={() => void trashOne(entry.id)}
+                            title="Восстановить"
+                            aria-label="Восстановить"
+                            onClick={() => void restoreOne(entry.id)}
+                          >
+                            <RotateCcw aria-hidden="true" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            iconOnly
+                            title="Удалить навсегда"
+                            aria-label="Удалить навсегда"
+                            onClick={() => setPurgeTarget(entry)}
                           >
                             <Trash2 aria-hidden="true" />
                           </Button>
-                        ) : null}
-                      </>
-                    )}
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="table-card">
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th style={{ width: 34 }}>
-                      <button
-                        type="button"
-                        className={`cloud-check${allSelected ? ' cloud-check--on' : ''}`}
-                        aria-label="Выбрать все"
-                        onClick={() =>
-                          setSelection(
-                            allSelected ? new Set() : new Set(items.map((item) => item.id)),
-                          )
-                        }
-                      >
-                        {allSelected ? <Check aria-hidden="true" /> : null}
-                      </button>
-                    </th>
-                    <th>Имя</th>
-                    <th>Тип</th>
-                    <th>Размер</th>
-                    <th>{view === 'trash' ? 'Удалён' : 'Изменён'}</th>
-                    <th style={{ textAlign: 'right' }}>Действия</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((entry) => (
-                    <tr key={entry.id}>
-                      <td>
-                        <button
-                          type="button"
-                          className={`cloud-check${selection.has(entry.id) ? ' cloud-check--on' : ''}`}
-                          aria-label="Выбрать"
-                          onClick={() => toggleSelect(entry.id)}
-                        >
-                          {selection.has(entry.id) ? <Check aria-hidden="true" /> : null}
-                        </button>
-                      </td>
-                      <td>
-                        <button
-                          type="button"
-                          className="cloud-row-name"
-                          onClick={() => {
-                            if (entry.entryType === 'folder') openFolder(entry);
-                            else if (canPreview(entry)) setPreviewTarget(entry);
-                          }}
-                        >
-                          <FileGlyph entry={entry} />
-                          <span className="truncate">{entry.name}</span>
-                          {entry.starred ? (
-                            <Star aria-hidden="true" className="cloud-card__star" />
-                          ) : null}
-                        </button>
-                      </td>
-                      <td className="muted tiny">
-                        {entry.entryType === 'folder' ? 'папка' : 'файл'}
-                      </td>
-                      <td className="mono tiny">
-                        {entry.entryType === 'folder' ? '—' : formatBytes(entry.sizeBytes)}
-                      </td>
-                      <td className="tiny muted">
-                        {view === 'trash' && entry.trashedAt
-                          ? `удалён ${formatDate(entry.trashedAt)}${
-                              trashDeadline(entry.trashedAt, trashRetentionDays)
-                                ? ` · удалится ${formatDate(
-                                    trashDeadline(entry.trashedAt, trashRetentionDays) as string,
-                                  )}`
-                                : ''
-                            }`
-                          : formatDate(entry.updatedAt)}
-                      </td>
-                      <td>
-                        <div className="table__actions">
-                          {entry.entryType === 'file' && canDownload ? (
+                        </>
+                      ) : (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            iconOnly
+                            title={entry.starred ? 'Убрать из избранного' : 'В избранное'}
+                            aria-label="Избранное"
+                            onClick={() => void toggleStar(entry)}
+                          >
+                            <Star
+                              aria-hidden="true"
+                              fill={entry.starred ? 'currentColor' : 'none'}
+                            />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            iconOnly
+                            title="Переименовать"
+                            aria-label="Переименовать"
+                            onClick={() => {
+                              setRenameTarget(entry);
+                              setRenameValue(entry.name);
+                            }}
+                          >
+                            <Pencil aria-hidden="true" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            iconOnly
+                            title="Переместить"
+                            aria-label="Переместить"
+                            onClick={() => {
+                              setMoveTargets([entry]);
+                              setMoveParent(entry.parentId);
+                            }}
+                          >
+                            <FolderInput aria-hidden="true" />
+                          </Button>
+                          {canDelete ? (
                             <Button
                               size="sm"
                               variant="ghost"
                               iconOnly
-                              aria-label="Скачать"
-                              onClick={() => startDownload(entry)}
+                              title="В корзину"
+                              aria-label="В корзину"
+                              onClick={() => void trashOne(entry.id)}
                             >
-                              <Download aria-hidden="true" />
+                              <Trash2 aria-hidden="true" />
                             </Button>
                           ) : null}
-                          {entry.entryType === 'file' && canShare && view !== 'trash' ? (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              iconOnly
-                              aria-label="Ссылка"
-                              onClick={() => openShare(entry)}
-                            >
-                              <Share2 aria-hidden="true" />
-                            </Button>
-                          ) : null}
-                          {view === 'trash' ? (
-                            <>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                iconOnly
-                                aria-label="Восстановить"
-                                onClick={() => void restoreOne(entry.id)}
-                              >
-                                <RotateCcw aria-hidden="true" />
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                iconOnly
-                                aria-label="Удалить навсегда"
-                                onClick={() => setPurgeTarget(entry)}
-                              >
-                                <Trash2 aria-hidden="true" />
-                              </Button>
-                            </>
-                          ) : (
-                            <>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                iconOnly
-                                aria-label="Переименовать"
-                                onClick={() => {
-                                  setRenameTarget(entry);
-                                  setRenameValue(entry.name);
-                                }}
-                              >
-                                <Pencil aria-hidden="true" />
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                iconOnly
-                                aria-label="В корзину"
-                                onClick={() => void trashOne(entry.id)}
-                              >
-                                <Trash2 aria-hidden="true" />
-                              </Button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        </>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
-          </div>
+          ) : (
+            <div className="table-card">
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 34 }}>
+                        <button
+                          type="button"
+                          className={`cloud-check${allSelected ? ' cloud-check--on' : ''}`}
+                          aria-label={allSelected ? 'Снять выделение' : 'Выбрать все'}
+                          onClick={toggleSelectAll}
+                        >
+                          {allSelected ? <Check aria-hidden="true" /> : null}
+                        </button>
+                      </th>
+                      <th>Имя</th>
+                      <th>Тип</th>
+                      <th>Размер</th>
+                      <th>{view === 'trash' ? 'Удалён' : 'Изменён'}</th>
+                      <th style={{ textAlign: 'right' }}>Действия</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((entry) => (
+                      <tr
+                        key={entry.id}
+                        className={`${selection.isSelected(entry.id) ? 'cloud-row--selected' : ''}${
+                          selection.isSelectionMode ? ' cloud-row--selection-mode' : ''
+                        }`}
+                        data-entry-id={entry.id}
+                        data-entry-name={entry.name}
+                        onClickCapture={(event) => handleEntryClickCapture(entry, event)}
+                        onClick={(event) => handleEntryClick(entry, event)}
+                      >
+                        <td>
+                          <button
+                            type="button"
+                            className={`cloud-check${
+                              selection.isSelected(entry.id) ? ' cloud-check--on' : ''
+                            }`}
+                            aria-label={selection.isSelected(entry.id) ? 'Снять выбор' : 'Выбрать'}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              selection.toggleSelection(entry.id);
+                            }}
+                          >
+                            {selection.isSelected(entry.id) ? <Check aria-hidden="true" /> : null}
+                          </button>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="cloud-row-name"
+                            onClick={() => activateEntry(entry)}
+                          >
+                            <FileGlyph entry={entry} />
+                            <span className="truncate">{entry.name}</span>
+                            {entry.starred ? (
+                              <Star aria-hidden="true" className="cloud-card__star" />
+                            ) : null}
+                          </button>
+                        </td>
+                        <td className="muted tiny">
+                          {entry.entryType === 'folder' ? 'папка' : 'файл'}
+                        </td>
+                        <td className="mono tiny">
+                          {entry.entryType === 'folder' ? '—' : formatBytes(entry.sizeBytes)}
+                        </td>
+                        <td className="tiny muted">
+                          {view === 'trash' && entry.trashedAt
+                            ? `удалён ${formatDate(entry.trashedAt)}${
+                                trashDeadline(entry.trashedAt, trashRetentionDays)
+                                  ? ` · удалится ${formatDate(
+                                      trashDeadline(entry.trashedAt, trashRetentionDays) as string,
+                                    )}`
+                                  : ''
+                              }`
+                            : formatDate(entry.updatedAt)}
+                        </td>
+                        <td>
+                          <div className="table__actions">
+                            {entry.entryType === 'file' && canDownload ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                iconOnly
+                                aria-label="Скачать"
+                                onClick={() => startDownload(entry)}
+                              >
+                                <Download aria-hidden="true" />
+                              </Button>
+                            ) : null}
+                            {entry.entryType === 'file' && canShare && view !== 'trash' ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                iconOnly
+                                aria-label="Ссылка"
+                                onClick={() => openShare(entry)}
+                              >
+                                <Share2 aria-hidden="true" />
+                              </Button>
+                            ) : null}
+                            {view === 'trash' ? (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  iconOnly
+                                  aria-label="Восстановить"
+                                  onClick={() => void restoreOne(entry.id)}
+                                >
+                                  <RotateCcw aria-hidden="true" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  iconOnly
+                                  aria-label="Удалить навсегда"
+                                  onClick={() => setPurgeTarget(entry)}
+                                >
+                                  <Trash2 aria-hidden="true" />
+                                </Button>
+                              </>
+                            ) : (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  iconOnly
+                                  aria-label="Переименовать"
+                                  onClick={() => {
+                                    setRenameTarget(entry);
+                                    setRenameValue(entry.name);
+                                  }}
+                                >
+                                  <Pencil aria-hidden="true" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  iconOnly
+                                  aria-label="В корзину"
+                                  onClick={() => void trashOne(entry.id)}
+                                >
+                                  <Trash2 aria-hidden="true" />
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -1498,13 +1821,19 @@ export function CloudStoragePage() {
       </Modal>
 
       <Modal
-        open={moveTarget !== null}
-        onClose={() => setMoveTarget(null)}
+        open={moveTargets.length > 0}
+        onClose={() => setMoveTargets([])}
         title="Переместить"
-        description={moveTarget ? `Запись «${moveTarget.name}»` : undefined}
+        description={
+          moveTargets.length > 1
+            ? `Выбрано записей: ${moveTargets.length}`
+            : moveTargets[0]
+              ? `Запись «${moveTargets[0].name}»`
+              : undefined
+        }
         footer={
           <>
-            <Button onClick={() => setMoveTarget(null)}>Отмена</Button>
+            <Button onClick={() => setMoveTargets([])}>Отмена</Button>
             <Button variant="primary" onClick={() => void saveMove()}>
               Переместить
             </Button>
@@ -1524,7 +1853,7 @@ export function CloudStoragePage() {
             >
               <option value="">Корень хранилища</option>
               {(folders.data?.items ?? [])
-                .filter((folder) => folder.id !== moveTarget?.id)
+                .filter((folder) => !moveTargets.some((target) => target.id === folder.id))
                 .map((folder) => (
                   <option key={folder.id} value={folder.id}>
                     {folder.name}
@@ -1714,9 +2043,158 @@ export function CloudStoragePage() {
         )}
       </Modal>
 
+      <Modal
+        open={bulkShareOpen}
+        onClose={() => {
+          if (bulkShareBusy) return;
+          setBulkShareOpen(false);
+        }}
+        title="Ссылки общего доступа"
+        description={`Выбрано файлов: ${bulkShareResults.length || selectedFiles.length}`}
+        footer={
+          bulkShareResults.length > 0 ? (
+            <>
+              <Button icon={<Copy aria-hidden="true" />} onClick={() => void copyBulkLinks()}>
+                Копировать все
+              </Button>
+              <Button variant="primary" onClick={() => setBulkShareOpen(false)}>
+                Готово
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button onClick={() => setBulkShareOpen(false)} disabled={bulkShareBusy}>
+                Отмена
+              </Button>
+              <Button
+                variant="primary"
+                loading={bulkShareBusy}
+                disabled={selectedFiles.length === 0}
+                onClick={() => void createBulkShares()}
+              >
+                Создать ссылки
+              </Button>
+            </>
+          )
+        }
+      >
+        {bulkShareResults.length > 0 ? (
+          <div className="stack" style={{ gap: 10 }}>
+            {bulkShareFailed > 0 ? (
+              <Alert tone="warn">
+                Не удалось создать ссылок: {bulkShareFailed}. Остальные ссылки готовы.
+              </Alert>
+            ) : null}
+            {bulkShareResults.map((result) => (
+              <div className="cloud-share-row" key={result.entryId}>
+                <div className="grow" style={{ minWidth: 0 }}>
+                  <div className="truncate" title={result.name}>
+                    {result.name}
+                  </div>
+                  <input className="input mono" readOnly value={result.url} />
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  iconOnly
+                  aria-label="Копировать ссылку"
+                  title="Копировать ссылку"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(result.url);
+                      toast('Ссылка скопирована.', 'success');
+                    } catch {
+                      toast('Скопируйте ссылку вручную.', 'warning');
+                    }
+                  }}
+                >
+                  <Copy aria-hidden="true" />
+                </Button>
+              </div>
+            ))}
+            {bulkShareForm.password.trim() ? (
+              <Alert tone="info">Ссылки защищены указанным паролем.</Alert>
+            ) : null}
+            {bulkShareForm.authOnly ? (
+              <Alert tone="info">Ссылки доступны только авторизованным пользователям.</Alert>
+            ) : null}
+          </div>
+        ) : (
+          <div className="stack">
+            {bulkShareFailed > 0 ? (
+              <Alert tone="danger">Не удалось создать ссылок: {bulkShareFailed}.</Alert>
+            ) : null}
+            <Field
+              label="Срок действия"
+              htmlFor="bulk-share-expiry"
+              hint={`По умолчанию — ${formatTtlHours(shareTtlHours)}.`}
+            >
+              <select
+                id="bulk-share-expiry"
+                className="select"
+                value={bulkShareForm.expiresInHours}
+                onChange={(event) =>
+                  setBulkShareForm((form) => ({
+                    ...form,
+                    expiresInHours: Number(event.target.value),
+                  }))
+                }
+              >
+                {expiryOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field
+              label="Пароль (необязательно)"
+              htmlFor="bulk-share-password"
+              hint="Один пароль для всех выбранных ссылок."
+            >
+              <input
+                id="bulk-share-password"
+                className="input"
+                type="text"
+                value={bulkShareForm.password}
+                onChange={(event) =>
+                  setBulkShareForm((form) => ({ ...form, password: event.target.value }))
+                }
+                autoComplete="new-password"
+              />
+            </Field>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={bulkShareForm.authOnly}
+                onChange={(event) =>
+                  setBulkShareForm((form) => ({ ...form, authOnly: event.target.checked }))
+                }
+              />
+              <span>Только для авторизованных</span>
+            </label>
+          </div>
+        )}
+      </Modal>
+
       {previewTarget ? (
         <CloudPreviewModal entry={previewTarget} onClose={() => setPreviewTarget(null)} />
       ) : null}
+
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        title={view === 'trash' ? 'Удалить навсегда?' : 'Удалить выбранные файлы?'}
+        description={`Удалить ${selectionCount} ${pluralize(
+          selectionCount,
+          'файл',
+          'файла',
+          'файлов',
+        )}?`}
+        confirmLabel={view === 'trash' ? 'Удалить навсегда' : 'Удалить'}
+        busy={trashBusy}
+        onConfirm={() => void deleteSelectedConfirmed()}
+        onCancel={() => setConfirmBulkDelete(false)}
+      />
 
       <ConfirmDialog
         open={purgeTarget !== null}

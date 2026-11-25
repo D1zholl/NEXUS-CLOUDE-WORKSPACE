@@ -9,6 +9,7 @@ import { TransferDrawer } from './components/TransferDrawer';
 import { DEFAULT_INTERFACE, applyAccent } from './lib/appearance';
 import { AppearanceSettingsPage } from './pages/AppearanceSettingsPage';
 import { AiWorkspacePage } from './pages/AiWorkspacePage';
+import { AIAgentWorkspacePage } from './pages/ai/AIAgentWorkspacePage';
 import { AiAdminPage } from './pages/AiAdminPage';
 import { AuditPage } from './pages/AuditPage';
 import { BackgroundSettingsPage } from './pages/BackgroundSettingsPage';
@@ -276,6 +277,16 @@ export default function App() {
                 <RequireModule module="ai">
                   <RequirePermission permission="ai.access">
                     <AiWorkspacePage />
+                  </RequirePermission>
+                </RequireModule>
+              }
+            />
+            <Route
+              path="/workspace/ai/agent"
+              element={
+                <RequireModule module="ai">
+                  <RequirePermission permission="ai.access">
+                    <AIAgentWorkspacePage />
                   </RequirePermission>
                 </RequireModule>
               }

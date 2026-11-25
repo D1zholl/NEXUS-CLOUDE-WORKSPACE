@@ -1,0 +1,38 @@
+# NEXUS WORKSPACE — пример config/nexus.toml.
+# Лаунчер создаёт рабочий файл автоматически. Секреты (DATABASE_URL,
+# NEXUS_SECRET) сюда не записываются: они передаются через окружение и
+# хранятся в config/secrets.json.
+
+[server]
+host = "127.0.0.1"
+port = 8080
+public_url = "http://127.0.0.1:8080"
+static_dir = "frontend"
+trust_proxy = false
+
+[database]
+max_connections = 20
+
+[security]
+session_ttl_hours = 24
+password_min_length = 12
+cookie_secure = false
+secret = ""
+allowed_origins = []
+
+[storage]
+max_upload_bytes = 10737418240
+chunk_max_bytes = 67108864
+upload_ttl_hours = 24
+share_default_hours = 168
+export_ttl_hours = 6
+
+[launcher]
+requests_per_minute = 120
+artifacts_per_minute = 600
+max_parallel_downloads = 8
+
+[logging]
+dir = "logs"
+file = "backend.log"
+keep_files = 14

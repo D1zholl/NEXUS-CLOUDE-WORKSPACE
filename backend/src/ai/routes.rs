@@ -14,7 +14,10 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::ai::runtime;
-use crate::ai::{approvals, conversations, orchestrator, providers, skills, tools, workspaces};
+use crate::ai::{
+    approvals, conversations, orchestrator, providers, skills, tools, workspace_files,
+    workspace_lifecycle, workspaces,
+};
 use crate::api::{ApiOk, Page, normalize_pagination};
 use crate::auth::session::AuthUser;
 use crate::core::error::{ApiError, ApiResult};
@@ -59,8 +62,71 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/approvals/pending", get(pending_approvals))
         .route("/approvals/{id}/approve", post(approve))
         .route("/approvals/{id}/reject", post(reject))
-        .route("/workspaces", get(list_workspaces))
-        .route("/workspaces/{id}", get(get_workspace))
+        .route("/workspaces", get(list_workspaces).post(create_workspace))
+        .route(
+            "/workspaces/deleted",
+            get(workspace_lifecycle::list_deleted),
+        )
+        .route(
+            "/workspaces/{id}/restore",
+            post(workspace_lifecycle::restore),
+        )
+        .route(
+            "/workspaces/{id}",
+            get(get_workspace)
+                .patch(update_workspace)
+                .delete(delete_workspace),
+        )
+        .route("/workspaces/{id}/overview", get(workspace_overview))
+        .route(
+            "/workspaces/{id}/files",
+            get(workspace_files::tree).delete(workspace_files::delete_entry),
+        )
+        .route(
+            "/workspaces/{id}/files/content",
+            get(workspace_files::content).put(workspace_files::save_content),
+        )
+        .route("/workspaces/{id}/files/raw", get(workspace_files::raw_file))
+        .route(
+            "/workspaces/{id}/files/stat",
+            get(workspace_files::stat_entry),
+        )
+        .route(
+            "/workspaces/{id}/files/directory",
+            post(workspace_files::create_directory),
+        )
+        .route(
+            "/workspaces/{id}/files/move",
+            post(workspace_files::move_entry),
+        )
+        .route(
+            "/workspaces/{id}/files/copy",
+            post(workspace_files::copy_entry),
+        )
+        .route(
+            "/workspaces/{id}/files/search",
+            post(workspace_files::search_files),
+        )
+        .route(
+            "/workspaces/{id}/files/upload",
+            post(workspace_files::upload),
+        )
+        .route(
+            "/workspaces/{id}/changes",
+            get(workspace_files::list_changes),
+        )
+        .route(
+            "/workspaces/{id}/snapshots/{snapshot_id}",
+            get(workspace_files::snapshot_detail),
+        )
+        .route(
+            "/workspaces/{id}/snapshots/{snapshot_id}/restore",
+            post(workspace_files::restore_snapshot),
+        )
+        .route(
+            "/workspaces/{id}/tasks/{task_id}/restore",
+            post(workspace_files::restore_task),
+        )
         .route("/workspaces/{id}/usage", get(workspace_usage))
         .route(
             "/workspaces/{id}/usage/refresh",
@@ -339,7 +405,36 @@ struct TaskQuery {
     page: Option<i64>,
     per_page: Option<i64>,
     status: Option<String>,
+    /// Список статусов через запятую для групповых фильтров UI.
+    statuses: Option<String>,
     conversation_id: Option<Uuid>,
+    workspace_id: Option<Uuid>,
+}
+
+/// Допустимые статусы Agent-задачи для фильтра.
+fn task_statuses(raw: Option<&str>) -> ApiResult<Option<Vec<String>>> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let allowed = [
+        "queued",
+        "running",
+        "waiting_approval",
+        "completed",
+        "failed",
+        "cancelled",
+    ];
+    let mut statuses = Vec::new();
+    for value in raw.split(',') {
+        let value = value.trim();
+        if !allowed.contains(&value) {
+            return Err(ApiError::validation("Некорректный фильтр статуса задачи."));
+        }
+        statuses.push(value.to_owned());
+    }
+    statuses.sort();
+    statuses.dedup();
+    Ok(Some(statuses))
 }
 
 async fn list_tasks(
@@ -350,15 +445,20 @@ async fn list_tasks(
     actor.require("ai.access")?;
     let query = parse_query(query)?;
     let (page, per_page, offset) = normalize_pagination(query.page, query.per_page);
+    let statuses = task_statuses(query.statuses.as_deref())?;
     let total: i64 = sqlx::query_scalar(
         "select count(*) from ai_tasks
           where owner_id = $1
             and ($2::text is null or status = $2)
-            and ($3::uuid is null or conversation_id = $3)",
+            and ($3::text[] is null or status = any($3))
+            and ($4::uuid is null or conversation_id = $4)
+            and ($5::uuid is null or workspace_id = $5)",
     )
     .bind(actor.id)
     .bind(&query.status)
+    .bind(&statuses)
     .bind(query.conversation_id)
+    .bind(query.workspace_id)
     .fetch_one(&state.db)
     .await?;
     let rows = sqlx::query_as::<_, crate::ai::models::TaskRow>(
@@ -370,12 +470,16 @@ async fn list_tasks(
            from ai_tasks
           where owner_id = $1
             and ($2::text is null or status = $2)
-            and ($3::uuid is null or conversation_id = $3)
-          order by created_at desc limit $4 offset $5",
+            and ($3::text[] is null or status = any($3))
+            and ($4::uuid is null or conversation_id = $4)
+            and ($5::uuid is null or workspace_id = $5)
+          order by created_at desc limit $6 offset $7",
     )
     .bind(actor.id)
     .bind(&query.status)
+    .bind(&statuses)
     .bind(query.conversation_id)
+    .bind(query.workspace_id)
     .bind(per_page)
     .bind(offset)
     .fetch_all(&state.db)
@@ -425,6 +529,7 @@ async fn create_task(
                     content,
                     attachment_ids: None,
                     idempotency_key,
+                    skill_ids: None,
                 },
             )
             .await?;
@@ -458,7 +563,9 @@ async fn task_events(
     let id = parse_path(path)?;
     let _ = orchestrator::owned_task(&state.db, id, actor.id).await?;
     let query = parse_query(query)?;
-    let events = orchestrator::task_events(&state.db, id, query.per_page.unwrap_or(200)).await?;
+    let events =
+        orchestrator::task_events(&state.db, id, query.per_page.unwrap_or(200), query.after)
+            .await?;
     Ok(ApiOk(json!({ "items": events })))
 }
 
@@ -503,6 +610,7 @@ async fn task_executions(
         risk: String,
         approval_id: Option<Uuid>,
         status: String,
+        result: Value,
         result_text: Option<String>,
         error_code: Option<String>,
         error_message: Option<String>,
@@ -514,8 +622,9 @@ async fn task_executions(
     }
     let rows = sqlx::query_as::<_, Row>(
         "select id, tool_call_id, tool_id, tool_version, arguments, args_hash, risk,
-                approval_id, status, result_text, error_code, error_message, exit_code,
-                duration_ms, started_at, finished_at, created_at
+                approval_id, status, coalesce(result, '{}'::jsonb) as result, result_text,
+                error_code, error_message, exit_code, duration_ms, started_at, finished_at,
+                created_at
            from ai_tool_executions where task_id = $1 order by created_at",
     )
     .bind(id)
@@ -534,6 +643,9 @@ async fn task_executions(
                 "risk": row.risk,
                 "approvalId": row.approval_id,
                 "status": row.status,
+                "result": row.result.clone(),
+                "changedFiles": row.result.get("changedFiles").cloned().unwrap_or(json!([])),
+                "diff": row.result.get("diff").cloned().unwrap_or(Value::Null),
                 "resultText": row.result_text.map(|text| text.chars().take(50_000).collect::<String>()),
                 "errorCode": row.error_code,
                 "errorMessage": row.error_message,
@@ -639,6 +751,102 @@ async fn get_workspace(
     Ok(ApiOk(row.view(false)))
 }
 
+#[derive(Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateWorkspaceBody {
+    name: String,
+    description: Option<String>,
+    runtime_node_id: Option<Uuid>,
+}
+
+async fn create_workspace(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    headers: HeaderMap,
+    body: Result<Json<CreateWorkspaceBody>, JsonRejection>,
+) -> ApiResult<Response> {
+    actor.require("ai.workspace.write")?;
+    let request = parse_body(body)?;
+    let request_hash = idempotency::hash_request(&request);
+    let st = state.clone();
+    idempotency::run_idempotent(
+        &state,
+        actor.id,
+        "ai.workspace.create",
+        &headers,
+        request_hash,
+        async move {
+            let row = workspaces::create_for_owner(
+                &st,
+                &actor,
+                workspaces::WorkspaceCreate {
+                    name: request.name,
+                    description: request.description.unwrap_or_default(),
+                    runtime_node_id: request.runtime_node_id,
+                },
+            )
+            .await?;
+            Ok(row.view(false))
+        },
+    )
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateWorkspaceBody {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+async fn update_workspace(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+    body: Result<Json<UpdateWorkspaceBody>, JsonRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    actor.require("ai.workspace.write")?;
+    let id = parse_path(path)?;
+    let request = parse_body(body)?;
+    let row =
+        workspaces::rename_for_owner(&state, &actor, id, request.name, request.description).await?;
+    Ok(ApiOk(row.view(false)))
+}
+
+async fn delete_workspace(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    actor.require("ai.workspace.write")?;
+    let id = parse_path(path)?;
+    let row = workspaces::delete_for_owner(&state, &actor, id).await?;
+    Ok(ApiOk(json!({
+        "deleted": true,
+        "id": row.id,
+        "softDelete": true,
+        "filesRetained": true,
+    })))
+}
+
+async fn workspace_overview(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    actor.require("ai.workspace.read")?;
+    let id = parse_path(path)?;
+    let workspace = workspaces::accessible(&state.db, id, actor.id, false, true).await?;
+    let mut value = workspaces::overview(&state.db, id).await?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "runtimeOnline".to_owned(),
+            json!(state.ai.runtime.is_online(workspace.runtime_node_id)),
+        );
+    }
+    Ok(ApiOk(value))
+}
+
 async fn workspace_usage(
     State(state): State<Arc<AppState>>,
     actor: AuthUser,
@@ -728,4 +936,28 @@ async fn list_tools(
 #[serde(rename_all = "camelCase")]
 struct PageQuery {
     per_page: Option<i64>,
+    /// Возвращать только события с id больше указанного (инкрементальное
+    /// восстановление после reconnect).
+    after: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_status_filter_accepts_known_statuses() {
+        let statuses = task_statuses(Some("running,queued,running"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(statuses, vec!["queued".to_owned(), "running".to_owned()]);
+        assert!(task_statuses(Some("")).unwrap().is_none());
+        assert!(task_statuses(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn task_status_filter_rejects_unknown_values() {
+        assert!(task_statuses(Some("running;drop")).is_err());
+        assert!(task_statuses(Some("deleted")).is_err());
+    }
 }

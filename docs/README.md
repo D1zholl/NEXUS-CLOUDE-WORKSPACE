@@ -6,6 +6,10 @@
 | [API.md](API.md) | HTTP API, WebSocket, коды ошибок |
 | [AI_WORKSPACE.md](AI_WORKSPACE.md) | AI Chat, Agent, Runtime, протокол, MCP, approvals, Skills, ограничения |
 | [AI_PRODUCTION_AUDIT.md](AI_PRODUCTION_AUDIT.md) | Phase 9 аудит, исправления, стенд, оставшиеся риски |
+| [AI_RUNTIME.md](AI_RUNTIME.md) | Runtime, протокол, tools, `workspace.delete`, квоты |
+| [FINAL_COMPLETION_AUDIT.md](FINAL_COMPLETION_AUDIT.md) | финальный аудит 1.1: состояние, проблемы, решения |
+| [FINAL_RELEASE_CHECKLIST.md](FINAL_RELEASE_CHECKLIST.md) | обязательные проверки 1.1.0 и открытые gates |
+| [FINAL_OPERATIONAL_GUIDE.md](FINAL_OPERATIONAL_GUIDE.md) | lifecycle workspace, retention, purge, резервы квот |
 | [SECURITY.md](SECURITY.md) | threat model, сессии, CSRF, RBAC, секреты |
 | [ADMIN_GUIDE.md](ADMIN_GUIDE.md) | System Management, пользователи, модули, AI Management |
 | [USER_GUIDE.md](USER_GUIDE.md) | рабочие пространства, Cloud Storage, AI Workspace |

@@ -116,44 +116,37 @@ export interface RealtimePayloads {
     code: string;
     message: string;
   };
-  'ai.task.queued': { taskId: string; conversationId: string; status: string };
-  'ai.task.started': { taskId: string; message?: string };
-  'ai.task.progress': {
-    taskId: string;
-    message?: string;
-    stage?: string;
-    data?: Record<string, unknown>;
-  };
-  'ai.tool.started': {
-    taskId: string;
-    message?: string;
-    data?: Record<string, unknown>;
-  };
-  'ai.tool.progress': {
-    taskId: string;
-    message?: string;
-    data?: Record<string, unknown>;
-  };
-  'ai.tool.waiting_approval': {
-    taskId: string;
-    message?: string;
-    data?: Record<string, unknown>;
-  };
-  'ai.tool.completed': {
-    taskId: string;
-    message?: string;
-    data?: Record<string, unknown>;
-  };
-  'ai.tool.failed': {
-    taskId: string;
-    message?: string;
-    data?: Record<string, unknown>;
-  };
-  'ai.task.completed': { taskId: string; message?: string };
-  'ai.task.failed': { taskId: string; message?: string };
-  'ai.task.cancelled': { taskId: string; message?: string };
+  'ai.task.queued': { taskId: string; conversationId?: string; status?: string };
+  'ai.task.started': AiTaskEventPayload;
+  'ai.task.progress': AiTaskEventPayload;
+  'ai.tool.started': AiTaskEventPayload;
+  'ai.tool.progress': AiTaskEventPayload;
+  'ai.tool.waiting_approval': AiTaskEventPayload;
+  'ai.tool.completed': AiTaskEventPayload;
+  'ai.tool.failed': AiTaskEventPayload;
+  'agent.file.changed': AiTaskEventPayload;
+  'ai.task.completed': AiTaskEventPayload;
+  'ai.task.failed': AiTaskEventPayload;
+  'ai.task.cancelled': AiTaskEventPayload;
   'ai.runtime.connected': { nodeId?: string };
   'ai.runtime.disconnected': { nodeId?: string };
+}
+
+/**
+ * Событие Agent-задачи в WS.
+ *
+ * `eventId`/`sequence` совпадают с `ai_task_events.id` и используются для
+ * инкрементального восстановления: клиент запрашивает `?after=<eventId>`.
+ * Старые серверные версии могут не передавать эти поля.
+ */
+export interface AiTaskEventPayload extends Record<string, unknown> {
+  taskId: string;
+  kind?: string;
+  stage?: string;
+  message?: string;
+  data?: Record<string, unknown>;
+  eventId?: number | null;
+  sequence?: number | null;
 }
 
 export interface DownloadPayload extends Record<string, unknown> {

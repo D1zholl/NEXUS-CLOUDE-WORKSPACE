@@ -1,0 +1,16 @@
+Microsoft Visual C++ Redistributable runtime files
+==================================================
+
+Files: vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll
+
+These files are redistributable components of the Microsoft Visual C++
+Redistributable. They are included so that Rust MSVC-built executables and
+the bundled PostgreSQL binaries can run on a clean Windows 11 system without
+a separate Visual Studio / Build Tools installation.
+
+Source of the files: the Microsoft Visual C++ Redistributable installed on
+the build machine (System32). Redistribution is permitted under the
+Microsoft Visual Studio license terms for redistributable files.
+
+Microsoft, Visual C++, and Windows are trademarks of Microsoft Corporation.
+This project is not affiliated with or endorsed by Microsoft.

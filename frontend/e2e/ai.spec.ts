@@ -12,7 +12,11 @@ test.describe('AI Workspace UI', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'AI Workspace' })).toBeVisible({
       timeout: 30_000,
     });
-    await expect(page.getByText('AI ещё не настроен')).toBeVisible({ timeout: 30_000 });
+    // Страница либо предлагает настроить AI, либо уже показывает селекторы
+    // провайдера/workspace (после E2E Agent на стенде провайдер существует).
+    await expect(
+      page.locator('.ai-selectors').or(page.getByText('AI ещё не настроен')).first(),
+    ).toBeVisible({ timeout: 30_000 });
 
     await page.goto('/system/ai');
     await expect(page.getByRole('heading', { level: 1, name: 'AI Management' })).toBeVisible({

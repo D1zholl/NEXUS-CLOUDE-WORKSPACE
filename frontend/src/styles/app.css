@@ -9,6 +9,7 @@
 @import './pages/launcher.css';
 @import './pages/system.css';
 @import './pages/ai.css';
+@import './pages/ai-agent.css';
 @import './pages/public-share.css';
 @import './background-3d.css';
 @import './components.css';

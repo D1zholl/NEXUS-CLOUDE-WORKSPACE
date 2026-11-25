@@ -1,6 +1,6 @@
 //! Исходящее WSS-соединение, heartbeat, исполнение команд и reconnect.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -9,7 +9,6 @@ use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{RwLock, Semaphore, mpsc};
 use tokio_tungstenite::tungstenite::Message;
@@ -22,12 +21,20 @@ use crate::mcp::McpRegistry;
 use crate::process::ProgramRegistry;
 use crate::protocol::{
     Envelope, ExecutionStatusResult, McpConnectionConfig, PolystrataStatus, ProviderChatCompleted,
-    ProviderRequest, ProviderResponse, RuntimeCapabilities, ToolExecuteRequest, ToolOutcome,
-    WorkspaceUsage, kind,
+    ProviderRequest, ProviderResponse, ProvisioningStatus, RuntimeCapabilities, ToolExecuteRequest,
+    ToolOutcome, WorkspaceDeleteRequest, WorkspaceDeleteResult, WorkspaceProvisionRequest,
+    WorkspaceProvisionResult, WorkspaceUsage, kind,
 };
 use crate::provider::ProviderClient;
+use crate::receipts::{PrunedMarker, Receipt, ReceiptFailure, ReceiptStore};
 use crate::tools::ToolExecutor;
 use crate::{filesystem, network};
+
+/// Маркер принадлежности каталога workspace. Создаётся при provisioning и
+/// проверяется при физическом удалении. Не содержит секретов.
+const WORKSPACE_MARKER: &str = ".nexus-workspace.json";
+/// Служебный каталог для атомарного переноса перед удалением.
+const TRASH_DIR: &str = ".nexus-trash";
 
 #[derive(Clone)]
 pub struct RuntimeContext {
@@ -43,6 +50,8 @@ pub struct RuntimeContext {
     task_index: Arc<DashMap<Uuid, Vec<Uuid>>>,
     provider_cache: Arc<DashMap<Uuid, ProviderChatCompleted>>,
     tool_cache: Arc<DashMap<Uuid, ToolOutcome>>,
+    failure_cache: Arc<DashMap<Uuid, ReceiptFailure>>,
+    pruned_cache: Arc<DashMap<Uuid, String>>,
     receipts: Arc<ReceiptStore>,
     semaphore: Arc<Semaphore>,
     last_status: Arc<RwLock<PolystrataStatus>>,
@@ -53,69 +62,48 @@ struct ActiveTask {
     cancel: CancellationToken,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Receipt {
-    message_id: Uuid,
-    kind: String,
-    #[serde(default)]
-    provider: Option<ProviderChatCompleted>,
-    #[serde(default)]
-    tool: Option<ToolOutcome>,
-}
-
-struct ReceiptStore {
-    path: PathBuf,
-}
-
-impl ReceiptStore {
-    fn load(path: PathBuf) -> (Self, Vec<Receipt>) {
-        let mut receipts = Vec::new();
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            let lines: Vec<&str> = text.lines().collect();
-            for line in lines.iter().rev().take(2000).rev() {
-                if let Ok(receipt) = serde_json::from_str::<Receipt>(line) {
-                    receipts.push(receipt);
-                }
-            }
-        }
-        (Self { path }, receipts)
-    }
-
-    fn append(&self, receipt: &Receipt) {
-        if let Ok(metadata) = std::fs::metadata(&self.path) {
-            if metadata.len() > 10 * 1024 * 1024 {
-                return;
-            }
-        }
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-        {
-            use std::io::Write;
-            if let Ok(line) = serde_json::to_string(receipt) {
-                let _ = writeln!(file, "{line}");
-            }
-        }
-    }
-}
-
 pub async fn run(
     config: RuntimeConfig,
     credentials: DeviceCredentials,
     mut shutdown: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> Result<()> {
     let roots = config.canonical_roots()?;
-    let (receipts, loaded) = ReceiptStore::load(config.receipts_path());
+    let (receipt_store, loaded, pruned) = ReceiptStore::load(
+        config.receipts_path(),
+        config.receipts_max_bytes(),
+        config.receipts_max_archives(),
+        config.receipts_load_limit(),
+    );
+    let receipts = Arc::new(receipt_store);
+    tracing::info!(
+        count = loaded.len(),
+        pruned = pruned.len(),
+        path = %receipts.path().display(),
+        "receipts загружены"
+    );
     let provider_cache: Arc<DashMap<Uuid, ProviderChatCompleted>> = Arc::new(DashMap::new());
     let tool_cache: Arc<DashMap<Uuid, ToolOutcome>> = Arc::new(DashMap::new());
+    let failure_cache: Arc<DashMap<Uuid, ReceiptFailure>> = Arc::new(DashMap::new());
+    let pruned_cache: Arc<DashMap<Uuid, String>> = Arc::new(DashMap::new());
     for receipt in loaded {
+        if let Some(failure) = receipt.failure {
+            failure_cache.insert(receipt.message_id, failure);
+            continue;
+        }
         if let Some(completed) = receipt.provider {
             provider_cache.insert(receipt.message_id, completed);
         }
         if let Some(outcome) = receipt.tool {
             tool_cache.insert(receipt.message_id, outcome);
+        }
+    }
+    for PrunedMarker { message_id, kind } in pruned {
+        // Полный receipt имеет приоритет: маркер только запрещает повтор.
+        if !provider_cache.contains_key(&message_id)
+            && !tool_cache.contains_key(&message_id)
+            && !failure_cache.contains_key(&message_id)
+        {
+            pruned_cache.insert(message_id, kind);
         }
     }
 
@@ -142,13 +130,12 @@ pub async fn run(
             task_index: Arc::new(DashMap::new()),
             provider_cache: provider_cache.clone(),
             tool_cache: tool_cache.clone(),
-            receipts: Arc::new(ReceiptStore {
-                path: config.receipts_path(),
-            }),
+            failure_cache: failure_cache.clone(),
+            pruned_cache: pruned_cache.clone(),
+            receipts: receipts.clone(),
             semaphore: Arc::new(Semaphore::new(max_parallel)),
             last_status: Arc::new(RwLock::new(PolystrataStatus::default())),
         };
-        let _ = &receipts;
 
         match connect_once(context, outbound_rx, shutdown.clone()).await {
             Ok(()) => tracing::info!("соединение с NEXUS закрыто"),
@@ -452,7 +439,46 @@ impl RuntimeContext {
             tools: self.tools.descriptors(),
             programs: self.tools.programs().descriptors(),
             network_isolation: network::status(),
+            provisioning: self.provisioning_status(),
         }
+    }
+
+    /// Состояние `workspace.provision`: каталог должен существовать и входить
+    /// в allowlist Runtime.
+    fn provisioning_status(&self) -> ProvisioningStatus {
+        match self.provisioning_root() {
+            Some(_) => ProvisioningStatus {
+                supported: true,
+                configured: true,
+            },
+            None => ProvisioningStatus {
+                supported: true,
+                configured: false,
+            },
+        }
+    }
+
+    fn provisioning_root(&self) -> Option<PathBuf> {
+        let configured = self.config.storage.provisioning_root.trim();
+        let candidate = if configured.is_empty() {
+            self.roots.first()?.clone()
+        } else {
+            let raw = PathBuf::from(configured);
+            if !raw.is_absolute() {
+                return None;
+            }
+            std::fs::canonicalize(raw).ok()?
+        };
+        if !candidate.is_dir() {
+            return None;
+        }
+        // База может совпадать с allowed_root: Runtime создаёт workspace
+        // дочерним каталогом, а containment дочернего пути проверяет
+        // Workspace::new.
+        if !self.roots.iter().any(|root| candidate.starts_with(root)) {
+            return None;
+        }
+        Some(candidate)
     }
 
     async fn probe_capabilities(&self) -> RuntimeCapabilities {
@@ -498,6 +524,7 @@ impl RuntimeContext {
             tools: self.tools.descriptors(),
             programs: self.tools.programs().descriptors(),
             network_isolation: network::status(),
+            provisioning: self.provisioning_status(),
         }
     }
 
@@ -530,6 +557,8 @@ impl RuntimeContext {
                 }
             }
             kind::WORKSPACE_USAGE => self.workspace_usage(envelope).await?,
+            kind::WORKSPACE_PROVISION => self.workspace_provision(envelope).await?,
+            kind::WORKSPACE_DELETE => self.workspace_delete(envelope).await?,
             kind::EXECUTION_STATUS => self.execution_status(envelope).await?,
             kind::MCP_CONFIGURE => {
                 let connections: Vec<McpConnectionConfig> = envelope
@@ -612,6 +641,27 @@ impl RuntimeContext {
             );
             return Ok(());
         }
+        if let Some(failure) = self.failure_cache.get(&envelope.message_id) {
+            self.send(
+                kind::PROVIDER_FAILED,
+                Some(envelope.message_id),
+                envelope.task_id,
+                json!({ "code": failure.code, "message": failure.message }),
+            );
+            return Ok(());
+        }
+        if self.pruned_cache.contains_key(&envelope.message_id) {
+            self.send(
+                kind::PROVIDER_FAILED,
+                Some(envelope.message_id),
+                envelope.task_id,
+                json!({
+                    "code": "AI_RECEIPT_ROTATED",
+                    "message": "Операция уже исполнялась ранее; повтор запрещён после ротации receipts."
+                }),
+            );
+            return Ok(());
+        }
         if self.active.contains_key(&envelope.message_id) {
             return Ok(());
         }
@@ -660,6 +710,7 @@ impl RuntimeContext {
                         kind: "provider".to_owned(),
                         provider: Some(completed.clone()),
                         tool: None,
+                        failure: None,
                     });
                     context.send(
                         kind::PROVIDER_COMPLETED,
@@ -670,13 +721,29 @@ impl RuntimeContext {
                 }
                 Err(error) => {
                     let (code, message) = provider_error(&error);
+                    let message = sanitize(&message, &context.roots);
+                    // Фиксируем и неуспешный результат: повторная доставка того
+                    // же messageId не должна заново вызывать модель.
+                    let failure = ReceiptFailure {
+                        kind: "provider".to_owned(),
+                        code: code.to_owned(),
+                        message: message.clone(),
+                    };
+                    context.failure_cache.insert(message_id, failure.clone());
+                    context.receipts.append(&Receipt {
+                        message_id,
+                        kind: "provider".to_owned(),
+                        provider: None,
+                        tool: None,
+                        failure: Some(failure),
+                    });
                     context.send(
                         kind::PROVIDER_FAILED,
                         Some(message_id),
                         task_id,
                         json!({
                             "code": code,
-                            "message": sanitize(&message, &context.roots),
+                            "message": message,
                         }),
                     );
                 }
@@ -783,6 +850,27 @@ impl RuntimeContext {
             );
             return Ok(());
         }
+        if let Some(failure) = self.failure_cache.get(&envelope.message_id) {
+            self.send(
+                kind::TOOL_FAILED,
+                Some(envelope.message_id),
+                envelope.task_id,
+                json!({ "code": failure.code, "message": failure.message }),
+            );
+            return Ok(());
+        }
+        if self.pruned_cache.contains_key(&envelope.message_id) {
+            self.send(
+                kind::TOOL_FAILED,
+                Some(envelope.message_id),
+                envelope.task_id,
+                json!({
+                    "code": "AI_RECEIPT_ROTATED",
+                    "message": "Операция уже исполнялась ранее; повтор запрещён после ротации receipts."
+                }),
+            );
+            return Ok(());
+        }
         if self.active.contains_key(&envelope.message_id) {
             return Ok(());
         }
@@ -813,7 +901,31 @@ impl RuntimeContext {
                 Err(_) => Err(anyhow::anyhow!("Runtime остановлен")),
             };
             match result {
-                Ok(outcome) => {
+                Ok(mut outcome) => {
+                    // MCP-инструмент может менять workspace, но его протокол не
+                    // возвращает usage. Измеряем сами, чтобы backend подтвердил
+                    // резерв квоты фактическим состоянием.
+                    if outcome.usage.is_none() && request.tool_id.starts_with("mcp.") {
+                        if let Ok(workspace) =
+                            filesystem::Workspace::new(&request.workspace_root, &context.roots)
+                        {
+                            let max_entries = context
+                                .config
+                                .limits
+                                .max_directory_entries
+                                .saturating_mul(100);
+                            if let Ok((bytes, files)) =
+                                filesystem::directory_usage(&workspace.root, max_entries)
+                            {
+                                outcome.usage = Some(WorkspaceUsage {
+                                    bytes: bytes as i64,
+                                    files: files as i64,
+                                    checked_at: Some(chrono::Utc::now()),
+                                    error: None,
+                                });
+                            }
+                        }
+                    }
                     let outcome = context.redact_outcome(outcome);
                     context.tool_cache.insert(message_id, outcome.clone());
                     context.receipts.append(&Receipt {
@@ -821,6 +933,7 @@ impl RuntimeContext {
                         kind: "tool".to_owned(),
                         provider: None,
                         tool: Some(outcome.clone()),
+                        failure: None,
                     });
                     context.send(
                         kind::TOOL_COMPLETED,
@@ -831,13 +944,29 @@ impl RuntimeContext {
                 }
                 Err(error) => {
                     let (code, message) = tool_error(&error, &cancel);
+                    let message = sanitize(&message, &context.roots);
+                    // Известная ошибка тоже receipt: повторная доставка не
+                    // должна запускать инструмент повторно.
+                    let failure = ReceiptFailure {
+                        kind: "tool".to_owned(),
+                        code: code.to_owned(),
+                        message: message.clone(),
+                    };
+                    context.failure_cache.insert(message_id, failure.clone());
+                    context.receipts.append(&Receipt {
+                        message_id,
+                        kind: "tool".to_owned(),
+                        provider: None,
+                        tool: None,
+                        failure: Some(failure),
+                    });
                     context.send(
                         kind::TOOL_FAILED,
                         Some(message_id),
                         task_id,
                         json!({
                             "code": code,
-                            "message": sanitize(&message, &context.roots),
+                            "message": message,
                         }),
                     );
                 }
@@ -960,6 +1089,119 @@ impl RuntimeContext {
         });
     }
 
+    async fn workspace_provision(&self, envelope: Envelope) -> Result<()> {
+        let Some(correlation) = envelope.correlation_id else {
+            return Ok(());
+        };
+        let request: WorkspaceProvisionRequest =
+            serde_json::from_value(envelope.payload.clone()).unwrap_or_default();
+        let result = match self.provision_workspace_dir(request.workspace_id) {
+            Ok(path) => WorkspaceProvisionResult {
+                workspace_id: request.workspace_id,
+                ok: true,
+                path: Some(path),
+                error: None,
+            },
+            Err(error) => WorkspaceProvisionResult {
+                workspace_id: request.workspace_id,
+                ok: false,
+                path: None,
+                error: Some(sanitize(&error.to_string(), &self.roots)),
+            },
+        };
+        self.send(
+            kind::WORKSPACE_PROVISION_RESULT,
+            Some(correlation),
+            envelope.task_id,
+            serde_json::to_value(result)?,
+        );
+        Ok(())
+    }
+
+    /// Создаёт `<provisioningRoot>/<workspaceId>`. Имя каталога — только UUID:
+    /// пользовательские строки в путь не попадают.
+    fn provision_workspace_dir(&self, workspace_id: Uuid) -> Result<String> {
+        if workspace_id.is_nil() {
+            bail!("некорректный идентификатор workspace");
+        }
+        let root = self
+            .provisioning_root()
+            .ok_or_else(|| anyhow::anyhow!("storage.provisioning_root не настроен"))?;
+        let target = root.join(workspace_id.to_string());
+        if target.exists() {
+            bail!("каталог workspace уже существует");
+        }
+        std::fs::create_dir(&target)
+            .with_context(|| format!("не удалось создать {}", target.display()))?;
+        let canonical = std::fs::canonicalize(&target)
+            .with_context(|| format!("не удалось проверить {}", target.display()))?;
+        if !canonical.starts_with(&root) {
+            let _ = std::fs::remove_dir(&target);
+            bail!("каталог workspace вышел за пределы provisioning root");
+        }
+        // Проверяем, что созданный каталог принимается как workspace.
+        let workspace = match filesystem::Workspace::new(&canonical.to_string_lossy(), &self.roots)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                let _ = std::fs::remove_dir(&canonical);
+                return Err(error);
+            }
+        };
+        if let Err(error) = write_workspace_marker(&workspace.root, workspace_id) {
+            let _ = std::fs::remove_dir(&canonical);
+            return Err(error);
+        }
+        Ok(canonical.to_string_lossy().to_string())
+    }
+
+    async fn workspace_delete(&self, envelope: Envelope) -> Result<()> {
+        let Some(correlation) = envelope.correlation_id else {
+            return Ok(());
+        };
+        let request: WorkspaceDeleteRequest =
+            serde_json::from_value(envelope.payload.clone()).unwrap_or_default();
+        let result = match self.delete_workspace_dir(request.workspace_id, request.workspace_root) {
+            Ok(result) => result,
+            Err(error) => WorkspaceDeleteResult {
+                workspace_id: request.workspace_id,
+                ok: false,
+                bytes: 0,
+                files: 0,
+                already_absent: false,
+                error: Some(sanitize(&error.to_string(), &self.roots)),
+            },
+        };
+        self.send(
+            kind::WORKSPACE_DELETE_RESULT,
+            Some(correlation),
+            envelope.task_id,
+            serde_json::to_value(result)?,
+        );
+        Ok(())
+    }
+
+    /// Физическое удаление каталога workspace.
+    ///
+    /// Runtime не доверяет переданному пути: каталог обязан быть прямым
+    /// дочерним каталогом `provisioning_root` с именем workspace UUID и
+    /// маркером, созданным при provisioning. Удаление выполняется через
+    /// атомарный rename в `.nexus-trash`; повторный вызов идемпотентен.
+    fn delete_workspace_dir(
+        &self,
+        workspace_id: Uuid,
+        workspace_root: Option<String>,
+    ) -> Result<WorkspaceDeleteResult> {
+        if workspace_id.is_nil() {
+            bail!("некорректный идентификатор workspace");
+        }
+        let root = self
+            .provisioning_root()
+            .ok_or_else(|| anyhow::anyhow!("storage.provisioning_root не настроен"))?;
+        let max_entries = self.config.limits.max_directory_entries.saturating_mul(100);
+        delete_managed_workspace(&root, workspace_id, workspace_root.as_deref(), max_entries)
+    }
+
     async fn workspace_usage(&self, envelope: Envelope) -> Result<()> {
         let Some(correlation) = envelope.correlation_id else {
             return Ok(());
@@ -1043,6 +1285,23 @@ impl RuntimeContext {
                 outcome: Some(outcome.clone()),
                 error: None,
             }
+        } else if let Some(failure) = self.failure_cache.get(&execution_message_id) {
+            ExecutionStatusResult {
+                message_id: execution_message_id,
+                status: "failed".to_owned(),
+                outcome: None,
+                error: Some(format!("{}: {}", failure.code, failure.message)),
+            }
+        } else if self.pruned_cache.contains_key(&execution_message_id) {
+            ExecutionStatusResult {
+                message_id: execution_message_id,
+                status: "failed".to_owned(),
+                outcome: None,
+                error: Some(
+                    "AI_RECEIPT_ROTATED: операция уже исполнялась ранее; повтор запрещён."
+                        .to_owned(),
+                ),
+            }
         } else if self.active.contains_key(&execution_message_id) {
             ExecutionStatusResult {
                 message_id: execution_message_id,
@@ -1068,6 +1327,173 @@ impl RuntimeContext {
         );
         Ok(())
     }
+}
+
+/// Ядро удаления, отделённое от RuntimeContext для тестируемости.
+///
+/// `root` — уже канонический `provisioning_root`. Runtime принимает только
+/// прямой дочерний каталог с именем workspace UUID. Возвращает измеренный
+/// размер до удаления и признак «уже отсутствует» для идемпотентного повтора.
+fn delete_managed_workspace(
+    root: &Path,
+    workspace_id: Uuid,
+    workspace_root: Option<&str>,
+    max_entries: usize,
+) -> Result<WorkspaceDeleteResult> {
+    if workspace_id.is_nil() {
+        bail!("некорректный идентификатор workspace");
+    }
+    let expected = root.join(workspace_id.to_string());
+    let candidate = match workspace_root.map(str::trim) {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => expected.clone(),
+    };
+    if !candidate.is_absolute() {
+        bail!("путь workspace должен быть абсолютным");
+    }
+    let candidate_exists = candidate.exists();
+    let canonical = if candidate_exists {
+        std::fs::canonicalize(&candidate)
+            .with_context(|| format!("не удалось проверить {}", candidate.display()))?
+    } else {
+        expected.clone()
+    };
+    if !same_path(&canonical, &expected) {
+        bail!(
+            "AI_WORKSPACE_OWNERSHIP_UNVERIFIED: каталог не является provisioning-каталогом этого workspace"
+        );
+    }
+    if let Some(parent) = canonical.parent() {
+        if !same_path(parent, root) {
+            bail!("AI_WORKSPACE_OWNERSHIP_UNVERIFIED: каталог вне provisioning root");
+        }
+    }
+    if candidate_exists && filesystem::is_reparse_point(&canonical)? {
+        bail!("AI_WORKSPACE_OWNERSHIP_UNVERIFIED: workspace является symlink/junction");
+    }
+    if candidate_exists {
+        verify_workspace_marker(&canonical, workspace_id)?;
+    }
+
+    let trash_root = root.join(TRASH_DIR);
+    if !trash_root.exists() {
+        std::fs::create_dir(&trash_root)
+            .with_context(|| format!("не удалось создать {}", trash_root.display()))?;
+    }
+    let trash_canonical = std::fs::canonicalize(&trash_root)
+        .with_context(|| format!("не удалось проверить {}", trash_root.display()))?;
+    if !same_path(&trash_canonical, &trash_root)
+        || !trash_canonical.starts_with(root)
+        || same_path(&trash_canonical, root)
+    {
+        bail!("AI_WORKSPACE_OWNERSHIP_UNVERIFIED: некорректный каталог удаления");
+    }
+    if filesystem::is_reparse_point(&trash_canonical)? {
+        bail!("AI_WORKSPACE_OWNERSHIP_UNVERIFIED: каталог удаления является symlink/junction");
+    }
+    let trash_target = trash_canonical.join(workspace_id.to_string());
+
+    let (bytes, files) = if candidate_exists {
+        filesystem::directory_usage(&canonical, max_entries).unwrap_or((0, 0))
+    } else {
+        (0, 0)
+    };
+    let already_absent = !candidate_exists && !trash_target.exists();
+
+    // Удаляем остаток предыдущей неудачной попытки, затем переносим текущий
+    // каталог. Rename в пределах одного тома атомарен.
+    if trash_target.exists() {
+        if filesystem::is_reparse_point(&trash_target)? {
+            bail!("AI_WORKSPACE_OWNERSHIP_UNVERIFIED: остаток удаления является symlink");
+        }
+        std::fs::remove_dir_all(&trash_target)
+            .with_context(|| format!("не удалось очистить {}", trash_target.display()))?;
+    }
+    if candidate_exists {
+        std::fs::rename(&canonical, &trash_target).with_context(|| {
+            format!(
+                "не удалось переместить workspace {} в каталог удаления",
+                canonical.display()
+            )
+        })?;
+    }
+    if trash_target.exists() {
+        std::fs::remove_dir_all(&trash_target)
+            .with_context(|| format!("не удалось удалить {}", trash_target.display()))?;
+    }
+    if candidate.exists() {
+        bail!("каталог workspace всё ещё существует после удаления");
+    }
+    Ok(WorkspaceDeleteResult {
+        workspace_id,
+        ok: true,
+        bytes: bytes as i64,
+        files: files as i64,
+        already_absent,
+        error: None,
+    })
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+/// Создаёт маркер принадлежности workspace. Вызывается только после создания
+/// пустого каталога `<provisioning_root>/<uuid>`.
+fn write_workspace_marker(root: &Path, workspace_id: Uuid) -> Result<()> {
+    let marker = root.join(WORKSPACE_MARKER);
+    if marker.exists() {
+        bail!("маркер workspace уже существует");
+    }
+    let payload = json!({
+        "workspaceId": workspace_id,
+        "createdAt": chrono::Utc::now(),
+        "format": 1,
+    });
+    let bytes = serde_json::to_vec_pretty(&payload)?;
+    std::fs::write(&marker, bytes)
+        .with_context(|| format!("не удалось создать маркер {}", marker.display()))?;
+    Ok(())
+}
+
+/// Проверяет маркер. Отсутствие маркера допускается только для каталогов,
+/// созданных до появления маркеров: путь уже подтверждён как
+/// `<provisioning_root>/<uuid>`, а маркер с чужим UUID всегда отклоняется.
+fn verify_workspace_marker(root: &Path, workspace_id: Uuid) -> Result<()> {
+    let marker = root.join(WORKSPACE_MARKER);
+    let raw = match std::fs::read(&marker) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::warn!(
+                workspace = %workspace_id,
+                path = %root.display(),
+                "маркер workspace отсутствует (legacy provisioning): принадлежность подтверждена путём"
+            );
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("не удалось прочитать маркер {}", marker.display()));
+        }
+    };
+    let value: Value = serde_json::from_slice(&raw)
+        .with_context(|| format!("некорректный маркер {}", marker.display()))?;
+    let marked = value
+        .get("workspaceId")
+        .and_then(Value::as_str)
+        .and_then(|text| Uuid::parse_str(text).ok());
+    if marked != Some(workspace_id) {
+        bail!("AI_WORKSPACE_OWNERSHIP_UNVERIFIED: маркер принадлежит другому workspace");
+    }
+    Ok(())
 }
 
 fn provider_error(error: &anyhow::Error) -> (&'static str, String) {
@@ -1110,6 +1536,96 @@ fn sanitize(message: &str, roots: &[PathBuf]) -> String {
         value = value.replace(&root.to_string_lossy().to_string(), "<workspace>");
     }
     value.chars().take(1000).collect()
+}
+
+#[cfg(test)]
+mod workspace_lifecycle_tests {
+    use super::*;
+
+    fn prepared() -> (tempfile::TempDir, PathBuf, Uuid) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let workspace_id = Uuid::new_v4();
+        let workspace = root.join(workspace_id.to_string());
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("index.txt"), b"hello").unwrap();
+        write_workspace_marker(&workspace, workspace_id).unwrap();
+        (dir, root, workspace_id)
+    }
+
+    #[test]
+    fn deletes_only_managed_workspace_and_is_idempotent() {
+        let (_dir, root, workspace_id) = prepared();
+        let workspace = root.join(workspace_id.to_string());
+        let first = delete_managed_workspace(
+            &root,
+            workspace_id,
+            Some(&workspace.to_string_lossy()),
+            10_000,
+        )
+        .unwrap();
+        assert!(first.ok);
+        assert!(!first.already_absent);
+        assert!(first.files >= 2);
+        assert!(!workspace.exists());
+        let second = delete_managed_workspace(
+            &root,
+            workspace_id,
+            Some(&workspace.to_string_lossy()),
+            10_000,
+        )
+        .unwrap();
+        assert!(second.ok);
+        assert!(second.already_absent);
+    }
+
+    #[test]
+    fn rejects_path_outside_provisioning_root() {
+        let (dir, root, workspace_id) = prepared();
+        let outside = dir.path().join("other");
+        std::fs::create_dir(&outside).unwrap();
+        let error = delete_managed_workspace(
+            &root,
+            workspace_id,
+            Some(&outside.to_string_lossy()),
+            10_000,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("OWNERSHIP_UNVERIFIED"));
+        assert!(outside.exists());
+    }
+
+    #[test]
+    fn rejects_foreign_marker() {
+        let (_dir, root, workspace_id) = prepared();
+        let workspace = root.join(workspace_id.to_string());
+        std::fs::write(
+            workspace.join(WORKSPACE_MARKER),
+            format!(r#"{{"workspaceId":"{}"}}"#, Uuid::new_v4()),
+        )
+        .unwrap();
+        let error = delete_managed_workspace(&root, workspace_id, None, 10_000).unwrap_err();
+        assert!(error.to_string().contains("OWNERSHIP_UNVERIFIED"));
+        assert!(workspace.exists());
+    }
+
+    #[test]
+    fn accepts_legacy_workspace_without_marker_by_path_convention() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let workspace_id = Uuid::new_v4();
+        let workspace = root.join(workspace_id.to_string());
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("a.txt"), b"legacy").unwrap();
+        delete_managed_workspace(&root, workspace_id, None, 10_000).unwrap();
+        assert!(!workspace.exists());
+    }
+
+    #[test]
+    fn marker_roundtrip() {
+        let (_dir, root, workspace_id) = prepared();
+        verify_workspace_marker(&root.join(workspace_id.to_string()), workspace_id).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -1275,9 +1791,14 @@ mod integration_tests {
             task_index: Arc::new(DashMap::new()),
             provider_cache: Arc::new(DashMap::new()),
             tool_cache: Arc::new(DashMap::new()),
-            receipts: Arc::new(ReceiptStore {
-                path: state.join("receipts.jsonl"),
-            }),
+            failure_cache: Arc::new(DashMap::new()),
+            pruned_cache: Arc::new(DashMap::new()),
+            receipts: Arc::new(ReceiptStore::new(
+                state.join("receipts.jsonl"),
+                config.receipts_max_bytes(),
+                config.receipts_max_archives(),
+                config.receipts_load_limit(),
+            )),
             semaphore: Arc::new(Semaphore::new(2)),
             last_status: Arc::new(RwLock::new(PolystrataStatus::default())),
         };

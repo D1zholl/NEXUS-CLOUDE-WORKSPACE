@@ -677,6 +677,8 @@ async fn serve(
             "AI-задачи восстановлены после перезапуска"
         );
     }
+    nexus::ai::workspace_lifecycle::spawn_purge_worker(state.clone());
+    nexus::ai::quota::spawn_janitor(state.clone());
     nexus::system::monitoring::spawn_realtime_broadcaster(state.clone());
     // C2: единственный потребитель очереди — планировщик фоновых задач.
     let scheduler = nexus::system::scheduler::spawn(state.clone());
@@ -739,7 +741,38 @@ async fn serve(
 }
 
 async fn shutdown_signal() {
-    if let Err(error) = tokio::signal::ctrl_c().await {
+    // Standalone-лаунчер не может послать Ctrl+C процессу без консоли, поэтому
+    // передаёт путь к файлу-сигналу через NEXUS_SHUTDOWN_FILE. Файл создаётся
+    // только локальным пользователем внутри каталога данных приложения, не
+    // доступен по сети и не расширяет HTTP-поверхность.
+    let shutdown_file = std::env::var("NEXUS_SHUTDOWN_FILE")
+        .ok()
+        .map(std::path::PathBuf::from);
+
+    if let Some(path) = shutdown_file {
+        let ctrl_c = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c);
+        let mut ticker = tokio::time::interval(Duration::from_millis(250));
+        loop {
+            tokio::select! {
+                result = &mut ctrl_c => {
+                    if let Err(error) = result {
+                        tracing::error!(%error, "не удалось подписаться на Ctrl+C");
+                    }
+                    break;
+                }
+                _ = ticker.tick() => {
+                    if path.exists() {
+                        tracing::info!(
+                            path = %path.display(),
+                            "получен файловый сигнал завершения"
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+    } else if let Err(error) = tokio::signal::ctrl_c().await {
         tracing::error!(%error, "не удалось подписаться на Ctrl+C");
     }
     tracing::info!("получен сигнал завершения");

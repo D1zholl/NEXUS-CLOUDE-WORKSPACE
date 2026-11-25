@@ -1,4 +1,4 @@
-# NEXUS AI Runtime — пример конфигурации.
+﻿# NEXUS AI Runtime — пример конфигурации.
 # Скопируйте в C:\NexusAI\runtime.toml и заполните значения.
 # Секреты (device token) хранятся отдельно в state\device.json и не входят в этот файл.
 
@@ -18,8 +18,17 @@ reconnect_max_seconds = 60
 state_dir = "C:\\NexusAI\\state"
 token_file = "device.json"
 receipts_file = "receipts.jsonl"
+# Ротация receipts: текущий сегмент, лимит сегментов и глубина загрузки.
+# Удаляются только самые старые сегменты; это безопасно, потому что Backend не
+# переотправляет завершённые команды (`completed`/`failed`).
+receipts_max_bytes = 10485760
+receipts_max_archives = 16
+receipts_load_limit = 5000
 # Workspace, созданные администратором, обязаны находиться внутри этих корней.
 allowed_roots = ["C:\\NexusAI\\workspaces"]
+# Каталог, в котором Runtime создаёт новые workspace по команде backend.
+# Пусто — первый allowed_root (но не сам корень). Имя каталога — UUID.
+provisioning_root = "C:\\NexusAI\\workspaces"
 log_dir = "C:\\NexusAI\\logs"
 
 [provider]
@@ -37,6 +46,10 @@ max_search_files = 2000
 max_search_results = 200
 max_directory_entries = 1000
 default_tool_timeout_seconds = 120
+# Снимки файлов для diff/отката: лимиты на файл, на операцию и число файлов.
+snapshot_max_bytes = 262144
+snapshot_max_total_bytes = 2097152
+snapshot_max_files = 100
 skip_directories = [".git", "node_modules", "target", "dist", ".venv", "__pycache__"]
 
 [logging]

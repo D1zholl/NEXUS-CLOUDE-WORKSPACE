@@ -98,6 +98,15 @@ pub const SETTINGS: &[SettingSpec] = &[
         label: "Срок хранения корзины, дней",
     },
     SettingSpec {
+        key: "limits.ai_workspace_retention_days",
+        kind: Kind::Int,
+        min: Some(1),
+        max: Some(3_650),
+        requires_restart: false,
+        permission: MANAGE,
+        label: "Срок хранения удалённых AI workspace, дней",
+    },
+    SettingSpec {
         key: "limits.quota_cloud_gb",
         kind: Kind::Int,
         min: Some(1),

@@ -1,1 +1,0 @@
-{"main-capability":{"identifier":"main-capability","description":"Minimal permissions for the NEXUS Launcher main window. No filesystem, shell or HTTP plugins are exposed to the WebView.","local":true,"windows":["main"],"permissions":["core:default"]}}

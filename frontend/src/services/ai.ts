@@ -100,6 +100,8 @@ export interface AiTask {
   status: 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
   stage: string;
   statusText: string;
+  /** Исходный запрос пользователя (для заголовка задачи). */
+  humanInput?: string;
   progress: number;
   iterations: number;
   maxIterations: number;
@@ -136,6 +138,14 @@ export interface AiExecution {
   risk: string;
   approvalId: string | null;
   status: string;
+  result?: Record<string, unknown>;
+  changedFiles?: Array<{
+    path: string;
+    action: string;
+    additions: number;
+    deletions: number;
+  }>;
+  diff?: string | null;
   resultText: string | null;
   errorCode: string | null;
   errorMessage: string | null;
@@ -173,6 +183,10 @@ export interface AiWorkspace {
   maxTaskSeconds: number;
   allowedTools: string[];
   allowedPrograms: string[];
+  description?: string;
+  deletedAt?: string | null;
+  /** Только в admin-списке: безопасные инструменты, которых нет в allowlist. */
+  missingSafeTools?: string[];
   status: 'active' | 'suspended' | string;
   usageBytes: number;
   usageFiles: number;
@@ -297,6 +311,7 @@ export interface AiQuota {
   maxTasksPerDay: number;
   maxToolCallsPerTask: number;
   maxTaskSeconds: number;
+  maxIterations: number;
   maxStorageBytes: number;
   maxFiles: number;
   maxFileBytes: number;
@@ -362,11 +377,15 @@ export const aiApi = {
     request<{ deleted: boolean }>(`${base}/conversations/${id}`, { method: 'DELETE' }),
   messages: (id: string, page = 1, perPage = 100, tail = true) =>
     request<Page<AiMessage>>(
-      `${base}/conversations/${id}/messages${queryString({ page, perPage, tail: tail ? 1 : undefined })}`,
+      `${base}/conversations/${id}/messages${queryString({
+        page,
+        perPage,
+        tail: tail ? true : undefined,
+      })}`,
     ),
   sendMessage: (
     id: string,
-    body: { content: string; attachmentIds?: string[]; idempotencyKey?: string },
+    body: { content: string; attachmentIds?: string[]; idempotencyKey?: string; skillIds?: string[] },
   ) =>
     request<{
       userMessage: AiMessage;
@@ -404,12 +423,22 @@ export const aiApi = {
       page?: number;
       perPage?: number;
       status?: string;
+      statuses?: string;
       conversationId?: string;
+      workspaceId?: string;
     } = {},
   ) => request<Page<AiTask>>(`${base}/tasks${queryString({ ...params, perPage: params.perPage })}`),
   task: (id: string) => request<AiTask>(`${base}/tasks/${id}`),
-  taskEvents: (id: string, perPage = 200) =>
-    request<{ items: AiTaskEvent[] }>(`${base}/tasks/${id}/events${queryString({ perPage })}`),
+  taskEvents: (
+    id: string,
+    options: { after?: number; perPage?: number } = {},
+  ) =>
+    request<{ items: AiTaskEvent[] }>(
+      `${base}/tasks/${id}/events${queryString({
+        perPage: options.perPage ?? 200,
+        after: options.after && options.after > 0 ? options.after : undefined,
+      })}`,
+    ),
   cancelTask: (id: string) =>
     request<{ taskId: string; requested: boolean; status: string }>(`${base}/tasks/${id}/cancel`, {
       method: 'POST',
@@ -523,6 +552,11 @@ export const aiApi = {
     request<AiWorkspace>(`${base}/admin/workspaces`, { method: 'POST', body }),
   updateWorkspace: (id: string, body: Record<string, unknown>) =>
     request<AiWorkspace>(`${base}/admin/workspaces/${id}`, { method: 'PATCH', body }),
+  grantDefaultWorkspaceTools: (id: string) =>
+    request<AiWorkspace>(`${base}/admin/workspaces/${id}/tools/grant-defaults`, {
+      method: 'POST',
+      body: {},
+    }),
   allSkills: () => request<{ items: AiSkill[] }>(`${base}/admin/skills`),
   importSkill: (file: File) => {
     const formData = new FormData();

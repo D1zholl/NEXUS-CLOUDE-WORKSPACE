@@ -45,6 +45,15 @@ function isExpectedHttpError(issue: ConsoleIssue): boolean {
   ) {
     return true;
   }
+  // Agent Workspace: конфликт версий, конфликт откатa и отсутствие
+  // baseSha256 — ожидаемые бизнес-ответы, которые UI показывает пользователю.
+  if (
+    /\/api\/v1\/ai\/workspaces\/[^/]+\/(files\/content|files\/upload|snapshots\/[^/]+\/restore|tasks\/[^/]+\/restore)$/.test(
+      url,
+    )
+  ) {
+    return /status of (409|412|428)/.test(issue.text);
+  }
   return false;
 }
 

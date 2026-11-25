@@ -317,6 +317,7 @@ pub async fn effective_settings(state: &AppState) -> ApiResult<Value> {
         "limits.share_ttl_hours": state.share_ttl_hours().await,
         "limits.export_ttl_hours": state.export_ttl_hours().await,
         "limits.trash_retention_days": state.trash_retention_days().await,
+        "limits.ai_workspace_retention_days": state.ai_workspace_retention_days().await,
         "limits.quota_cloud_gb": quota_cloud,
         "limits.quota_minecraft_gb": quota_minecraft,
         "jobs.max_concurrent": state.jobs_max_concurrent().await,

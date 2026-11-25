@@ -11,6 +11,108 @@
 
 ### Added
 
+- **Полный жизненный цикл AI Workspace.** Мягкое удаление сохраняет срок
+  хранения (`limits.ai_workspace_retention_days`, по умолчанию 30 дней) и
+  ставит workspace в `ai_workspace_lifecycle`. Восстановление доступно до
+  физической очистки и проверяет Runtime, данные и конфликт имени. Фоновый
+  worker отправляет Runtime `workspace.delete`; Runtime подтверждает
+  принадлежность каталога (`<provisioning_root>/<workspaceId>` + маркер),
+  атомарно переносит его в `.nexus-trash` и удаляет. После подтверждения
+  backend очищает snapshots и usage-семплы. Есть dry-run, retry/backoff,
+  статус `blocked` при недоказанном владении и административные метрики.
+- **Транзакционные резервы квот AI.** `ai_quota_reservations` +
+  advisory-lock пользователя проверяют `usage + активные резервы + изменение`
+  для write/upload/copy/move/delete/patch/program.run/MCP. Резерв
+  подтверждается фактическим usage Runtime, известная ошибка освобождает его,
+  неизвестный результат остаётся `uncertain` (плюс административный release).
+  Это закрывает гонку нескольких Runtime и параллельных HTTP-операций.
+- **MCP usage.** После вызова MCP-инструмента Runtime измеряет workspace и
+  возвращает usage, чтобы backend подтвердил резерв фактическим состоянием.
+- **NEXUS AI Agent Workspace (Agent IDE).** Отдельная страница
+  `/workspace/ai/agent`: Explorer (реальные файлы Runtime), Editor
+  (вкладки, подсветка, поиск, автосохранение, Markdown/JSON/изображения,
+  diff) и AI Agent (streaming, история, действия, approvals, стоп,
+  повтор, редактирование сообщения). Перетаскиваемые разделители, скрытие
+  панелей, полноэкранный редактор, сохранение раскладки, переключение
+  Explorer/Editor/Agent на небольших экранах. Обычный `/workspace/ai`
+  не изменён.
+- **Файловый API workspace через Runtime.** Дерево, чтение, сохранение,
+  создание каталога, перемещение, копирование, удаление, поиск по
+  содержимому, загрузка с компьютера и скачивание. Все операции идут через
+  существующий `tool.execute`; второго исполнителя и доступа к диску
+  backend нет.
+- **Оптимистическая блокировка записи.** `fs.write`/`fs.write_base64`
+  принимают `expectedSha256`; проверка и запись выполняются под
+  per-workspace mutex. При конфликте API возвращает `409 AI_FILE_CONFLICT`
+  с текущей версией для сравнения — пользовательские правки не
+  перезаписываются молча.
+- **Снимки изменений агента и безопасный откат.** Runtime возвращает
+  `snapshots` (before/after, до 256 КиБ на файл, 2 МиБ на операцию).
+  Backend сохраняет их в `ai_file_snapshots` (миграция `0022`), строит
+  diff и откатывает файл/задачу только если содержимое не менялось после
+  задачи. Откат при конфликте отклоняется с деталями.
+- **Управление workspace владельцем.** Создание (Runtime выделяет каталог
+  через `workspace.provision`, физический путь не показывается),
+  переименование, описание, мягкое удаление, сводка usage/задач/активности.
+- **Task Manager.** Список задач с фильтрами (все/выполняются/ждут
+  подтверждения/завершены/ошибки/отменены), пагинация, детали, события,
+  выполнения, изменённые файлы. Открытие старой задачи восстанавливает
+  историю без повторного запуска.
+- **Нижняя панель IDE.** Problems, Output (`program.run` stdout/stderr,
+  явно помечен как синхронный), Execution History, Changed Files,
+  Workspace Usage.
+- **Квоты пользователя применяются.** `ai_user_quotas.max_storage_bytes`,
+  `max_files`, `max_file_bytes` проверяются backend до изменяющих
+  операций (сумма usage по workspace + дельта), а не только отображаются.
+- **Runtime.** `workspace.provision`, `fs.read_base64`/`fs.write_base64`
+  (только для файлового API пользователя, не для модели), снимки файлов,
+  `storage.provisioning_root`, лимиты снимков.
+- **OpenAPI.** 200 путей / 244 операции (+14/+19), `docs/API.md`
+  перегенерирован.
+
+### Security
+
+- Проверка workspace ownership и `deleted_at` на каждом файловом запросе;
+  RBAC `ai.workspace.read/write`, повторная проверка пути на Runtime,
+  containment/reparse-point, лимиты файла и квоты.
+- Скачивание SVG/HTML не отдаётся inline; inline разрешён только для
+  растровых изображений, для остальных — `attachment` + `nosniff`.
+- Создание workspace на произвольном Runtime запрещено: только устройство,
+  где у пользователя уже есть workspace.
+
+### Fixed
+
+- **AI Workspace: загрузка сообщений диалога.** Frontend отправлял
+  `tail=1`, а backend ожидает boolean (`tail=true`), из-за чего API отвечал
+  `Failed to deserialize query string: tail`. Теперь `queryString` поддерживает
+  boolean и отправляет `tail=true`; production-frontend пересобран.
+- **AI Agent: остановка задачи.** Кнопка «Отменить» в Agent Mode вызывала
+  chat-stop endpoint, если в БД было промежуточное streaming-сообщение.
+  Теперь в Agent Mode всегда используется `tasks/{id}/cancel`.
+
+### Added
+
+- **Agent Mode: стабилизация и завершение.** Инкрементальные события
+  (`events?after`, дедупликация по `eventId`), безопасное обновление allowlist
+  старых workspace (`missingSafeTools` + `tools/grant-defaults`), ротация
+  `receipts.jsonl` с компактным индексом `messageId`, retry только для
+  идемпотентных инструментов, `max_iterations` в UI квот, история запусков и
+  человекочитаемый approval. Playwright Agent E2E на реальном Runtime,
+  сценарий с реальной PolyStrata и двухмашинный runbook/скрипт.
+  Миграция `0021` проверена на тестовой БД (дубли/идемпотентность); на рабочей
+  БД не применялась.
+
+- **Standalone-релиз Windows 11 x64.** `build-standalone.ps1` собирает
+  production backend/frontend, native launcher `NEXUS.exe`, portable
+  PostgreSQL 17.6, AI Runtime, runtime DLL, лицензии, manifest и SHA-256.
+  Launcher сам создаёт БД и секреты, применяет миграции, создаёт первого
+  администратора через штатный CLI, запускает PostgreSQL/backend, проверяет
+  health, открывает браузер, поддерживает backup/restore, diagnostics,
+  single-instance, graceful stop и перенос папки. Для путей с кириллицей
+  используется ASCII-junction к PostgreSQL-утилитам (ограничение initdb).
+  Backend получил файловый сигнал graceful shutdown (`NEXUS_SHUTDOWN_FILE`)
+  для остановки без консоли. Документация: `standalone/README-FIRST-RUN.txt`,
+  `standalone/docs/STANDALONE.md`.
 - **NEXUS AI Workspace.** AI Chat и Agent Mode: потоковые ответы PolyStrata,
   сохранение диалогов/сообщений, вложения, повтор/редактирование/остановка,
   оркестрация Agent Task, approvals, Skills, изолированные workspace и квоты.

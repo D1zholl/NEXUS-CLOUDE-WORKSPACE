@@ -48,6 +48,22 @@ pub fn task_limit_reached() -> ApiError {
     )
 }
 
+pub fn task_already_running() -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "AI_TASK_ALREADY_RUNNING",
+        "В этом диалоге уже выполняется Agent-задача. Дождитесь её завершения или отмените её.",
+    )
+}
+
+pub fn workspace_task_limit_reached() -> ApiError {
+    ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "AI_WORKSPACE_TASK_LIMIT_REACHED",
+        "Достигнут лимит параллельных задач рабочего пространства.",
+    )
+}
+
 pub fn task_not_cancellable() -> ApiError {
     ApiError::new(
         StatusCode::CONFLICT,

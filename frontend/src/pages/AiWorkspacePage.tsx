@@ -38,6 +38,7 @@ import {
 } from '../components/ui';
 import { formatBytes, formatDate, formatPercent } from '../lib/format';
 import { realtime } from '../lib/realtime';
+import { useIncrementalTaskEvents } from '../lib/taskEvents';
 import { aiApi, errorMessage } from '../services/api';
 import type {
   AiApproval,
@@ -106,6 +107,7 @@ export function AiWorkspacePage() {
   const [attachments, setAttachments] = useState<AiAttachment[]>([]);
   const [search, setSearch] = useState('');
   const [taskId, setTaskId] = useState<string | null>(null);
+  const [skillIds, setSkillIds] = useState<string[]>([]);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -180,15 +182,11 @@ export function AiWorkspacePage() {
         ? 3000
         : false,
   });
-  const events = useQuery({
-    queryKey: ['ai-task-events', currentTask?.id],
-    queryFn: () => aiApi.taskEvents(currentTask!.id),
-    enabled: !!currentTask?.id,
-    refetchInterval:
-      currentTask && ['queued', 'running', 'waiting_approval'].includes(currentTask.status)
-        ? 3000
-        : false,
-  });
+  const events = useIncrementalTaskEvents(
+    currentTask?.id,
+    !!currentTask && ['queued', 'running', 'waiting_approval'].includes(currentTask.status),
+  );
+  const { ingestRealtime: ingestTaskEvent, reload: reloadTaskEvents } = events;
   const approvals = useQuery({
     queryKey: ['ai-approvals'],
     queryFn: aiApi.pendingApprovals,
@@ -235,6 +233,7 @@ export function AiWorkspacePage() {
     if (activeConversation.providerId) setProviderId(activeConversation.providerId);
     setWorkspaceId(activeConversation.workspaceId ?? '');
     setTaskId(null);
+    setSkillIds([]);
   }, [activeConversation?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -248,17 +247,19 @@ export function AiWorkspacePage() {
     const unsubscribe = realtime.onStatus((connected) => {
       if (!connected) return;
       // После reconnect WebSocket не является источником истины: перечитываем
-      // сохранённое состояние из PostgreSQL через HTTP API.
+      // сохранённое состояние из PostgreSQL через HTTP API. События задачи
+      // синхронизируются полной последней страницей (добирает пропущенное),
+      // дальше снова работает инкрементальный `after`.
       void queryClient.invalidateQueries({ queryKey: ['ai-conversations'] });
       void queryClient.invalidateQueries({ queryKey: ['ai-messages'] });
       void queryClient.invalidateQueries({ queryKey: ['ai-tasks'] });
       void queryClient.invalidateQueries({ queryKey: ['ai-task'] });
-      void queryClient.invalidateQueries({ queryKey: ['ai-task-events'] });
       void queryClient.invalidateQueries({ queryKey: ['ai-executions'] });
       void queryClient.invalidateQueries({ queryKey: ['ai-approvals'] });
+      reloadTaskEvents();
     });
     return unsubscribe;
-  }, [queryClient]);
+  }, [queryClient, reloadTaskEvents]);
 
   useEffect(() => {
     const unsubscribe = realtime.subscribe((event) => {
@@ -298,12 +299,19 @@ export function AiWorkspacePage() {
         }
         return;
       }
-      if (event.kind.startsWith('ai.task.') || event.kind.startsWith('ai.tool.')) {
+      if (
+        event.kind.startsWith('ai.task.') ||
+        event.kind.startsWith('ai.tool.') ||
+        event.kind === 'agent.file.changed'
+      ) {
         const eventTask = String(payload.taskId ?? '');
         if (eventTask) {
           setTaskId((value) => value ?? eventTask);
+          // Событие уже содержит eventId/sequence: добавляем его в кэш без
+          // полного перечитывания. Legacy payload без eventId — fallback.
+          const applied = ingestTaskEvent(payload, event.kind);
+          if (!applied) reloadTaskEvents();
           void queryClient.invalidateQueries({ queryKey: ['ai-task', eventTask] });
-          void queryClient.invalidateQueries({ queryKey: ['ai-task-events', eventTask] });
           void queryClient.invalidateQueries({ queryKey: ['ai-executions', eventTask] });
         }
         void queryClient.invalidateQueries({ queryKey: ['ai-tasks', activeId] });
@@ -322,7 +330,7 @@ export function AiWorkspacePage() {
       }
     });
     return unsubscribe;
-  }, [activeId, queryClient, search]);
+  }, [activeId, ingestTaskEvent, queryClient, reloadTaskEvents, search]);
 
   const setActive = (id: string | null): void => {
     const next = new URLSearchParams(params);
@@ -376,6 +384,7 @@ export function AiWorkspacePage() {
       return aiApi.sendMessage(conv.id, {
         content: draft.trim(),
         attachmentIds: attachments.map((item) => item.id),
+        skillIds: mode === 'agent' && skillIds.length > 0 ? skillIds : undefined,
       });
     },
     onSuccess: async (result) => {
@@ -395,10 +404,20 @@ export function AiWorkspacePage() {
 
   const stopMutation = useMutation({
     mutationFn: async () => {
-      if (streaming && activeId) return aiApi.stop(activeId);
+      // В Agent Mode «Остановить» всегда управляет задачей, даже если в БД
+      // есть промежуточное streaming-сообщение модели. Chat-stop относится
+      // только к Chat Mode.
+      if (
+        mode !== 'agent' &&
+        streaming &&
+        activeId
+      ) {
+        return aiApi.stop(activeId);
+      }
       if (currentTask && ['queued', 'running', 'waiting_approval'].includes(currentTask.status)) {
         return aiApi.cancelTask(currentTask.id);
       }
+      if (streaming && activeId) return aiApi.stop(activeId);
       return null;
     },
     onSuccess: async () => {
@@ -828,6 +847,35 @@ export function AiWorkspacePage() {
                   ))}
                 </div>
               ) : null}
+              {mode === 'agent' ? (
+                <div className="ai-skill-picker">
+                  <span className="tiny muted">Skills:</span>
+                  {(skills.data?.items ?? []).length === 0 ? (
+                    <span className="tiny muted">навыки не назначены</span>
+                  ) : (
+                    (skills.data?.items ?? []).map((skill) => {
+                      const active = skillIds.includes(skill.id);
+                      return (
+                        <button
+                          key={skill.id}
+                          type="button"
+                          className={`badge ai-skill-chip${active ? ' active' : ''}`}
+                          title={skill.description}
+                          onClick={() =>
+                            setSkillIds((current) =>
+                              active
+                                ? current.filter((id) => id !== skill.id)
+                                : [...current, skill.id],
+                            )
+                          }
+                        >
+                          {skill.name}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              ) : null}
               <textarea
                 className="input ai-textarea"
                 rows={3}
@@ -909,21 +957,45 @@ export function AiWorkspacePage() {
                 ) : null
               }
             />
+            {currentTask && (tasks.data?.items.length ?? 0) > 1 ? (
+              <label className="ai-selector" style={{ marginBottom: 8 }}>
+                <span>Запуск диалога</span>
+                <select
+                  className="input"
+                  value={taskId ?? currentTask.id}
+                  onChange={(event) => setTaskId(event.target.value)}
+                >
+                  {(tasks.data?.items ?? []).map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {statusLabel(item.status)} · {formatDate(item.createdAt)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             {!currentTask ? (
               <div className="tiny muted" style={{ padding: '8px 0' }}>
                 Agent-задачи появятся здесь после отправки запроса в Agent Mode.
               </div>
             ) : (
-              <TaskPanel
-                task={task.data ?? currentTask}
-                executions={executions.data?.items ?? []}
-                events={events.data?.items ?? []}
-                onCancel={
-                  ['queued', 'running', 'waiting_approval'].includes(currentTask.status)
-                    ? () => stopMutation.mutate()
-                    : undefined
-                }
-              />
+              <>
+                {events.error ? (
+                  <Alert tone="danger">
+                    Не удалось синхронизировать события задачи: {events.error}. Показаны
+                    последние загруженные данные.
+                  </Alert>
+                ) : null}
+                <TaskPanel
+                  task={task.data ?? currentTask}
+                  executions={executions.data?.items ?? []}
+                  events={events.items}
+                  onCancel={
+                    ['queued', 'running', 'waiting_approval'].includes(currentTask.status)
+                      ? () => stopMutation.mutate()
+                      : undefined
+                  }
+                />
+              </>
             )}
           </aside>
         </div>
@@ -1087,6 +1159,32 @@ function MessageBubble({
   );
 }
 
+function approvalActionSummary(approval: AiApproval): string {
+  const args = approval.arguments ?? {};
+  const program = typeof args.programId === 'string' ? args.programId : '';
+  if (program) {
+    const cwd = typeof args.cwd === 'string' && args.cwd ? ` · cwd ${args.cwd}` : '';
+    return `Программа ${program}${cwd}`;
+  }
+  if (typeof args.patch === 'string') {
+    const changed = args.patch
+      .split('\n')
+      .filter((line) => line.startsWith('+') || line.startsWith('-')).length;
+    return `Unified diff · изменённых строк: ${changed}`;
+  }
+  if (typeof args.path === 'string' && args.path) return `Путь: ${args.path}`;
+  if (typeof args.from === 'string' && typeof args.to === 'string') {
+    return `${args.from} → ${args.to}`;
+  }
+  return 'Действие требует подтверждения';
+}
+
+function approvalTimeLeft(expiresAt: string): string {
+  const remaining = new Date(expiresAt).getTime() - Date.now();
+  if (!Number.isFinite(remaining) || remaining <= 0) return 'срок истёк';
+  return `осталось ~${Math.max(1, Math.ceil(remaining / 60_000))} мин`;
+}
+
 function ApprovalCard({
   approval,
   busy,
@@ -1104,8 +1202,9 @@ function ApprovalCard({
         <AlertTriangle aria-hidden="true" />
         <strong>Требуется подтверждение: {approval.toolId}</strong>
         <Badge tone="warn">риск: {approval.risk}</Badge>
-        <span className="tiny muted">до {formatDate(approval.expiresAt)}</span>
+        <span className="tiny muted">{approvalTimeLeft(approval.expiresAt)}</span>
       </div>
+      <div className="tiny muted">{approvalActionSummary(approval)}</div>
       <pre className="ai-approval__args">{JSON.stringify(approval.arguments, null, 2)}</pre>
       <div className="ai-approval__actions">
         <Button variant="ghost" size="sm" disabled={busy || !canDecide} onClick={() => onDecide(false)}>
@@ -1139,6 +1238,18 @@ function TaskPanel({
 }) {
   const [tab, setTab] = useState<'tools' | 'events'>('tools');
   const progress = Math.max(0, Math.min(1, task.progress || 0));
+  const changedFiles = new Map<
+    string,
+    { path: string; action: string; additions: number; deletions: number }
+  >();
+  for (const execution of executions) {
+    for (const file of execution.changedFiles ?? []) {
+      changedFiles.set(file.path, file);
+    }
+  }
+  const diffs = executions
+    .map((execution) => execution.diff)
+    .filter((value): value is string => Boolean(value && value.trim()));
   return (
     <div className="ai-task">
       <div className="ai-task__status">
@@ -1158,6 +1269,26 @@ function TaskPanel({
       <div className="meter">
         <span style={{ width: `${progress * 100}%` }} />
       </div>
+      {changedFiles.size > 0 ? (
+        <div className="ai-changed-files">
+          <div className="tiny muted">Изменённые файлы</div>
+          {[...changedFiles.values()].map((file) => (
+            <div key={file.path} className="ai-changed-file">
+              <span className="mono truncate">{file.path}</span>
+              <Badge tone={file.action === 'delete' ? 'danger' : 'info'}>{file.action}</Badge>
+              <span className="tiny muted">
+                +{file.additions} / -{file.deletions}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {diffs.length > 0 ? (
+        <details className="ai-diff">
+          <summary>Diff ({diffs.length})</summary>
+          <pre>{diffs.join('\n')}</pre>
+        </details>
+      ) : null}
       {task.errorMessage ? (
         <Alert tone="danger">
           {task.errorCode}: {task.errorMessage}
@@ -1206,6 +1337,9 @@ function TaskPanel({
                 <span className="truncate">{execution.toolId}</span>
                 {execution.durationMs != null ? (
                   <span className="tiny muted">{execution.durationMs} ms</span>
+                ) : null}
+                {execution.exitCode != null ? (
+                  <span className="tiny muted">exit {execution.exitCode}</span>
                 ) : null}
               </summary>
               <div className="ai-execution__body">

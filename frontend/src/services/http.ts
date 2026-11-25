@@ -167,7 +167,9 @@ export async function request<T>(
   return (payload as ApiSuccess<T>).data;
 }
 
-export function queryString(params: Record<string, string | number | undefined | null>): string {
+export function queryString(
+  params: Record<string, string | number | boolean | undefined | null>,
+): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null || value === '') continue;

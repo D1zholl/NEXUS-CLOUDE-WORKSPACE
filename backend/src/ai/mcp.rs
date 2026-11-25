@@ -315,6 +315,7 @@ pub async fn allowed_for_task(
                 max_output_bytes: policy.max_output_bytes,
                 input_schema: row.input_schema.clone(),
                 server_side: false,
+                ui_only: false,
                 mcp: true,
             },
             policy,

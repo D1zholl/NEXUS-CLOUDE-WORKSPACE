@@ -41,6 +41,10 @@ pub mod kind {
 
     pub const WORKSPACE_USAGE: &str = "workspace.usage";
     pub const WORKSPACE_USAGE_RESULT: &str = "workspace.usage_result";
+    pub const WORKSPACE_PROVISION: &str = "workspace.provision";
+    pub const WORKSPACE_PROVISION_RESULT: &str = "workspace.provision_result";
+    pub const WORKSPACE_DELETE: &str = "workspace.delete";
+    pub const WORKSPACE_DELETE_RESULT: &str = "workspace.delete_result";
 
     pub const EXECUTION_STATUS: &str = "execution.status";
     pub const EXECUTION_STATUS_RESULT: &str = "execution.status_result";
@@ -115,6 +119,17 @@ pub struct RuntimeCapabilities {
     pub programs: Vec<ProgramDescriptor>,
     #[serde(default)]
     pub network_isolation: NetworkIsolationStatus,
+    #[serde(default)]
+    pub provisioning: ProvisioningStatus,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningStatus {
+    #[serde(default)]
+    pub supported: bool,
+    #[serde(default)]
+    pub configured: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -376,6 +391,64 @@ pub struct WorkspaceUsage {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    pub path: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub additions: i64,
+    #[serde(default)]
+    pub deletions: i64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSnapshot {
+    pub path: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub before_base64: Option<String>,
+    #[serde(default)]
+    pub before_sha256: Option<String>,
+    #[serde(default)]
+    pub after_base64: Option<String>,
+    #[serde(default)]
+    pub after_sha256: Option<String>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProvisionResult {
+    pub workspace_id: Uuid,
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceDeleteResult {
+    pub workspace_id: Uuid,
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub bytes: i64,
+    #[serde(default)]
+    pub files: i64,
+    #[serde(default)]
+    pub already_absent: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolOutcome {
     #[serde(default)]
     pub result: Value,
@@ -388,6 +461,15 @@ pub struct ToolOutcome {
     /// Актуальный usage workspace после операции (если Runtime его измерил).
     #[serde(default)]
     pub usage: Option<WorkspaceUsage>,
+    /// Файлы, изменённые инструментом (для UI и события agent.file.changed).
+    #[serde(default)]
+    pub changed_files: Vec<ChangedFile>,
+    /// Ограниченный unified diff (если Runtime смог его построить).
+    #[serde(default)]
+    pub diff: Option<String>,
+    /// Снимки до/после для diff и безопасного отката.
+    #[serde(default)]
+    pub snapshots: Vec<FileSnapshot>,
 }
 
 /// Описание MCP-соединения, которое backend передаёт Runtime.

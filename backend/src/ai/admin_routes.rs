@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::ai::models::WorkspaceRow;
 use crate::ai::runtime;
-use crate::ai::{admin, errors, mcp, providers, skills, tools, workspaces};
+use crate::ai::{admin, errors, mcp, providers, skills, tools, workspace_lifecycle, workspaces};
 use crate::api::ApiOk;
 use crate::auth::session::AuthUser;
 use crate::core::error::{ApiError, ApiResult};
@@ -48,7 +48,27 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/providers/{id}/models", get(provider_models))
         .route("/providers/{id}/status", get(provider_status))
         .route("/workspaces", get(list_workspaces).post(create_workspace))
+        .route(
+            "/workspaces/lifecycle",
+            get(workspace_lifecycle::admin_list),
+        )
+        .route(
+            "/workspaces/purge/dry-run",
+            get(workspace_lifecycle::admin_dry_run),
+        )
+        .route(
+            "/workspaces/purge/metrics",
+            get(workspace_lifecycle::admin_metrics),
+        )
+        .route(
+            "/workspaces/{id}/purge",
+            post(workspace_lifecycle::admin_purge_now),
+        )
         .route("/workspaces/{id}", patch(update_workspace))
+        .route(
+            "/workspaces/{id}/tools/grant-defaults",
+            post(grant_default_workspace_tools),
+        )
         .route(
             "/workspaces/{id}/usage/refresh",
             post(refresh_workspace_usage),
@@ -100,6 +120,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/programs/{id}", patch(update_program))
         .route("/quotas", get(list_quotas))
         .route("/quotas/{user_id}", put(set_quota))
+        .route(
+            "/quotas/reservations/{id}/release",
+            post(release_quota_reservation),
+        )
 }
 
 fn parse_body<T>(body: Result<Json<T>, JsonRejection>) -> ApiResult<T> {
@@ -675,9 +699,76 @@ async fn list_workspaces(
 ) -> ApiResult<ApiOk<Value>> {
     admin(&actor)?;
     let rows = workspaces::list_all(&state.db).await?;
-    Ok(ApiOk(json!({
-        "items": rows.iter().map(|row| row.view(true)).collect::<Vec<_>>()
-    })))
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            let mut view = row.view(true);
+            if let Some(object) = view.as_object_mut() {
+                // Только отчёт для администратора: сами права не меняются.
+                object.insert(
+                    "missingSafeTools".to_owned(),
+                    json!(tools::missing_safe_tools(row)),
+                );
+            }
+            view
+        })
+        .collect();
+    Ok(ApiOk(json!({ "items": items })))
+}
+
+/// Управляемое администратором включение новых безопасных инструментов для
+/// уже существующего workspace.
+///
+/// Добавляются только инструменты из набора по умолчанию (risk low/medium и
+/// server-side Skills). Опасные инструменты по-прежнему выдаются только через
+/// полное редактирование workspace с явным выбором администратора.
+async fn grant_default_workspace_tools(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let id = parse_path(path)?;
+    let workspace = workspaces::load_workspace(&state.db, id).await?;
+    let missing = tools::missing_safe_tools(&workspace);
+    if missing.is_empty() {
+        return Ok(ApiOk(workspace.view(true)));
+    }
+    let mut updated: Vec<String> = workspace.allowed_tools.clone();
+    updated.extend(missing.iter().cloned());
+    let row = sqlx::query_as::<_, WorkspaceRow>(
+        "update ai_workspaces
+            set allowed_tools = $2, updated_at = now()
+          where id = $1
+          returning id, owner_id, runtime_node_id, name, root_path, quota_bytes, max_files,
+                    max_file_bytes, max_parallel_tasks, max_task_seconds, allowed_tools,
+                    allowed_programs, status, usage_bytes, usage_files, usage_checked_at,
+                    network_policy, max_process_memory_bytes, usage_reported_by, usage_error,
+                    description, deleted_at, created_by, created_at, updated_at",
+    )
+    .bind(id)
+    .bind(&updated)
+    .fetch_one(&state.db)
+    .await?;
+    record(
+        &state.db,
+        AuditEvent {
+            event_type: "ai.workspace.tools_granted",
+            actor_id: Some(actor.id),
+            actor_username: &actor.username,
+            target_type: "ai_workspace",
+            target_id: &id.to_string(),
+            result: "success",
+            ip: &actor.ip,
+            details: json!({
+                "addedTools": missing,
+                "ownerId": row.owner_id,
+                "runtimeNodeId": row.runtime_node_id,
+            }),
+        },
+    )
+    .await;
+    Ok(ApiOk(row.view(true)))
 }
 
 async fn create_workspace(
@@ -698,7 +789,7 @@ async fn create_workspace(
                    max_file_bytes, max_parallel_tasks, max_task_seconds, allowed_tools,
                    allowed_programs, status, usage_bytes, usage_files, usage_checked_at,
                    network_policy, max_process_memory_bytes, usage_reported_by, usage_error,
-                   created_by, created_at, updated_at",
+                   description, deleted_at, created_by, created_at, updated_at",
     )
     .bind(request.owner_id)
     .bind(request.runtime_node_id)
@@ -817,7 +908,7 @@ async fn update_workspace(
                     max_file_bytes, max_parallel_tasks, max_task_seconds, allowed_tools,
                     allowed_programs, status, usage_bytes, usage_files, usage_checked_at,
                     network_policy, max_process_memory_bytes, usage_reported_by, usage_error,
-                    created_by, created_at, updated_at",
+                    description, deleted_at, created_by, created_at, updated_at",
     )
     .bind(id)
     .bind(merged.owner_id)
@@ -1873,6 +1964,7 @@ async fn list_quotas(
         max_tasks_per_day: i32,
         max_tool_calls_per_task: i32,
         max_task_seconds: i32,
+        max_iterations: i32,
         max_storage_bytes: i64,
         max_files: i32,
         max_file_bytes: i64,
@@ -1884,6 +1976,7 @@ async fn list_quotas(
                 coalesce(q.max_tasks_per_day, 50) as max_tasks_per_day,
                 coalesce(q.max_tool_calls_per_task, 40) as max_tool_calls_per_task,
                 coalesce(q.max_task_seconds, 900) as max_task_seconds,
+                coalesce(q.max_iterations, 10) as max_iterations,
                 coalesce(q.max_storage_bytes, 1073741824) as max_storage_bytes,
                 coalesce(q.max_files, 10000) as max_files,
                 coalesce(q.max_file_bytes, 16777216) as max_file_bytes,
@@ -1902,11 +1995,48 @@ async fn list_quotas(
             "maxTasksPerDay": row.max_tasks_per_day,
             "maxToolCallsPerTask": row.max_tool_calls_per_task,
             "maxTaskSeconds": row.max_task_seconds,
+            "maxIterations": row.max_iterations,
             "maxStorageBytes": row.max_storage_bytes,
             "maxFiles": row.max_files,
             "maxFileBytes": row.max_file_bytes,
             "updatedAt": row.updated_at,
-        })).collect::<Vec<_>>()
+        })).collect::<Vec<_>>(),
+        "reservations": crate::ai::quota::metrics(&state).await?,
+    })))
+}
+
+async fn release_quota_reservation(
+    State(state): State<Arc<AppState>>,
+    actor: AuthUser,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> ApiResult<ApiOk<Value>> {
+    admin(&actor)?;
+    let id = parse_path(path)?;
+    let reservation = crate::ai::quota::admin_release(&state, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Активный резерв квоты не найден."))?;
+    record(
+        &state.db,
+        AuditEvent {
+            event_type: "ai.quota.reservation_released",
+            actor_id: Some(actor.id),
+            actor_username: &actor.username,
+            target_type: "ai_quota_reservation",
+            target_id: &reservation.id.to_string(),
+            result: "success",
+            ip: &actor.ip,
+            details: json!({
+                "workspaceId": reservation.workspace_id,
+                "userId": reservation.user_id,
+                "bytes": reservation.bytes,
+                "files": reservation.files,
+            }),
+        },
+    )
+    .await;
+    Ok(ApiOk(json!({
+        "id": reservation.id,
+        "released": true,
     })))
 }
 
@@ -1917,9 +2047,15 @@ struct QuotaInput {
     max_tasks_per_day: i32,
     max_tool_calls_per_task: i32,
     max_task_seconds: i32,
+    #[serde(default = "default_max_iterations")]
+    max_iterations: i32,
     max_storage_bytes: i64,
     max_files: i32,
     max_file_bytes: i64,
+}
+
+fn default_max_iterations() -> i32 {
+    10
 }
 
 async fn set_quota(
@@ -1935,6 +2071,7 @@ async fn set_quota(
         || !(0..=10_000).contains(&request.max_tasks_per_day)
         || !(1..=500).contains(&request.max_tool_calls_per_task)
         || !(30..=3600).contains(&request.max_task_seconds)
+        || !(1..=50).contains(&request.max_iterations)
     {
         return Err(ApiError::validation(
             "Значения квот вне допустимого диапазона.",
@@ -1950,13 +2087,15 @@ async fn set_quota(
     sqlx::query(
         "insert into ai_user_quotas
             (user_id, max_concurrent_tasks, max_tasks_per_day, max_tool_calls_per_task,
-             max_task_seconds, max_storage_bytes, max_files, max_file_bytes, updated_by)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             max_task_seconds, max_iterations, max_storage_bytes, max_files, max_file_bytes,
+             updated_by)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          on conflict (user_id) do update
             set max_concurrent_tasks = excluded.max_concurrent_tasks,
                 max_tasks_per_day = excluded.max_tasks_per_day,
                 max_tool_calls_per_task = excluded.max_tool_calls_per_task,
                 max_task_seconds = excluded.max_task_seconds,
+                max_iterations = excluded.max_iterations,
                 max_storage_bytes = excluded.max_storage_bytes,
                 max_files = excluded.max_files,
                 max_file_bytes = excluded.max_file_bytes,
@@ -1968,6 +2107,7 @@ async fn set_quota(
     .bind(request.max_tasks_per_day)
     .bind(request.max_tool_calls_per_task)
     .bind(request.max_task_seconds)
+    .bind(request.max_iterations)
     .bind(request.max_storage_bytes.max(0))
     .bind(request.max_files.max(0))
     .bind(request.max_file_bytes.max(0))

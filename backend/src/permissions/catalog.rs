@@ -38,6 +38,20 @@ pub const PERMISSIONS: &[(&str, &str, &str)] = &[
         "system",
         "Управление фоновыми задачами",
     ),
+    ("ai.access", "ai", "Доступ к AI Workspace"),
+    ("ai.chat.use", "ai", "Использование AI Chat"),
+    ("ai.agent.use", "ai", "Запуск AI Agent задач"),
+    ("ai.workspace.read", "ai", "Чтение рабочего пространства AI"),
+    (
+        "ai.workspace.write",
+        "ai",
+        "Изменение рабочего пространства AI",
+    ),
+    ("ai.skills.use", "ai", "Использование Skills"),
+    ("ai.tools.use", "ai", "Использование инструментов Agent"),
+    ("ai.tasks.cancel", "ai", "Отмена AI задач"),
+    ("ai.actions.approve", "ai", "Подтверждение опасных действий"),
+    ("ai.admin.manage", "ai", "Администрирование AI"),
 ];
 
 pub fn is_valid(key: &str) -> bool {
@@ -56,4 +70,28 @@ pub fn module_of(key: &str) -> Option<&'static str> {
         .iter()
         .find(|(k, _, _)| *k == key)
         .map(|(_, m, _)| *m)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_permissions_are_registered() {
+        for key in [
+            "ai.access",
+            "ai.chat.use",
+            "ai.agent.use",
+            "ai.workspace.read",
+            "ai.workspace.write",
+            "ai.skills.use",
+            "ai.tools.use",
+            "ai.tasks.cancel",
+            "ai.actions.approve",
+            "ai.admin.manage",
+        ] {
+            assert!(is_valid(key), "право {key} отсутствует в каталоге");
+            assert_eq!(module_of(key), Some("ai"));
+        }
+    }
 }

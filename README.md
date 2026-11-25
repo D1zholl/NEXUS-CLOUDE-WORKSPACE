@@ -11,6 +11,10 @@
 - **NEXUS AI Workspace** — AI Chat и Agent Mode с потоковыми ответами PolyStrata,
   реальным удалённым исполнением задач через отдельный NEXUS AI Runtime,
   подтверждениями опасных действий, Skills и изолированными workspace.
+- **NEXUS AI Agent IDE** (`/workspace/ai/agent`) — отдельная рабочая среда:
+  Explorer реальных файлов Runtime, редактор с вкладками/подсветкой/diff,
+  AI Agent с историей задач, снимки изменений и безопасный откат,
+  квоты, execution output. Обычный AI Chat сохранён на `/workspace/ai`.
 - **System Management** — пользователи, роли и granular-права, диски и тома,
   мониторинг, фоновые задачи, журнал событий, настройки 3D-фона и модулей.
 
@@ -19,15 +23,33 @@
 RBAC, WebSocket-события и проверяемые контракты API. Демонстрационных данных и
 декоративных кнопок нет.
 
-> Версия **1.0.0** (20.11.2026). Карта документации —
+> Версия **1.0.0** (20.11.2026); идёт подготовка **1.1.0**. Карта документации —
 > [docs/README.md](docs/README.md). История изменений —
 > [CHANGELOG.md](CHANGELOG.md). Аудит готовности и открытые пункты —
-> [COMPLETE.md](COMPLETE.md), фактические результаты тестов —
-> [docs/TESTING.md](docs/TESTING.md). Краткая инструкция установки и входа на
-> Windows — [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md).
+> [COMPLETE.md](COMPLETE.md), чек-лист 1.1 —
+> [docs/FINAL_RELEASE_CHECKLIST.md](docs/FINAL_RELEASE_CHECKLIST.md),
+> фактические результаты тестов — [docs/TESTING.md](docs/TESTING.md).
+> Краткая инструкция установки и входа на Windows —
+> [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md).
 > AI Workspace, Runtime и протокол — [docs/AI_WORKSPACE.md](docs/AI_WORKSPACE.md)
-> и [runtime/README.md](runtime/README.md). Production-аудит Phase 9 —
-> [docs/AI_PRODUCTION_AUDIT.md](docs/AI_PRODUCTION_AUDIT.md).
+> и [runtime/README.md](runtime/README.md). Lifecycle и квоты —
+> [docs/FINAL_OPERATIONAL_GUIDE.md](docs/FINAL_OPERATIONAL_GUIDE.md).
+> Production-аудит Phase 9 — [docs/AI_PRODUCTION_AUDIT.md](docs/AI_PRODUCTION_AUDIT.md).
+
+## Standalone-релиз для Windows 11
+
+Готовая переносимая сборка без Rust, Node.js, Visual Studio, Git и системного
+PostgreSQL:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build-standalone.ps1 -Clean
+```
+
+Результат: `NEXUS-Standalone-release\` с `NEXUS.exe`, `Start.bat`/`Stop.bat`,
+production backend/frontend, portable PostgreSQL 17.6, AI Runtime, лицензиями,
+`manifest.json`, `SHA256SUMS`, `BUILD-REPORT.txt` и `TEST-REPORT.txt`.
+Пользовательская инструкция — `README-FIRST-RUN.txt`; технические детали —
+`docs\STANDALONE.md`; ограничения AI Runtime — `docs\AI_RUNTIME.md`.
 
 ---
 

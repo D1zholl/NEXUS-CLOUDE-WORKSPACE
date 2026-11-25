@@ -37,11 +37,11 @@ Toolchain observed: Rust 1.100.0, Node 26.13.1, npm 11.20.0.
 | AI Chat (`/workspace/ai`) | Implemented | Streaming/reconnect paths exist; production provider not exercised here | Keep; regression tests | Backend AI tests, frontend tests |
 | Agent IDE (`/workspace/ai/agent`) | Implemented (uncommitted delta) | New code was not in a commit; standalone built before it | Commit delta; rebuild standalone | Typecheck/build + Playwright |
 | Workspace Explorer / editor | Implemented via Runtime tools | All file operations go through `tool.execute`; no server-side disk access | Keep single executor | `workspace_files` tests, E2E |
-| Workspace delete | **Soft only** | `deleted_at` set, physical files and snapshots remain forever; no queue, no restore endpoint, no retention setting | Phase 1: purge queue, restore, retention, Runtime-verified physical delete | New backend/runtime tests |
-| Workspace restore | **Missing** | No endpoint or state transition | Phase 1 | API + unit tests |
-| Workspace provisioning | Implemented | Creates `<provisioning_root>/<uuid>` without an ownership marker | Phase 1: marker file + delete ownership proof | Runtime unit/integration test |
+| Workspace delete | **Completed in 1.1 work** | `deleted_at` set, physical files and snapshots remain forever; no queue, no restore endpoint, no retention setting | Implemented: purge queue, restore, retention setting, Runtime-verified physical delete | `ai_tests` lifecycle tests; runtime delete tests |
+| Workspace restore | **Completed in 1.1 work** | No endpoint or state transition | Implemented: owner/admin, Runtime/data check, name conflict handling | `workspace_soft_delete_is_restorable...` |
+| Workspace provisioning | Implemented | Creates `<provisioning_root>/<uuid>` without an ownership marker | Implemented: marker + delete ownership proof | `runtime::workspace_lifecycle_tests` |
 | Quota: task slots | Implemented | `reserve_task_slot` uses advisory lock | Keep | Existing tests |
-| Quota: storage/files | **Partial** | Checks use last measured `ai_workspaces.usage_*`; no reservation; concurrent writes and multiple paths can race; copy/move/delete are not centrally covered | Phase 2: `ai_quota_reservations` + transactional reserve/confirm/release for every mutating tool | Concurrency tests |
+| Quota: storage/files | **Completed in 1.1 work** | Checks use last measured `ai_workspaces.usage_*`; no reservation; concurrent writes and multiple paths can race; copy/move/delete are not centrally covered | Implemented: `ai_quota_reservations` + transactional reserve/confirm/release for every mutating tool | Concurrent, idempotency, expiry, user-wide tests |
 | `max_file_bytes` | Implemented | Enforced in Runtime and user API | Keep | Existing tests |
 | `max_parallel_tasks` | Implemented | Per user and per workspace | Keep | Existing tests |
 | Snapshots | **Limited** | 256 KiB/file, 2 MiB/operation, text/base64 in PostgreSQL; recursive directory delete and big files are marked `truncated`; no streaming/version manifests | Phase 3 (not completed in this session) — documented gate | Snapshot tests; limitation documented |
@@ -74,8 +74,8 @@ Toolchain observed: Rust 1.100.0, Node 26.13.1, npm 11.20.0.
 
 | ID | Severity | Finding | Status |
 |---|---|---|---|
-| A-01 | High | A soft-deleted workspace can be purged without an ownership proof from Runtime; a supplied path alone must never be trusted | Fixing in Phase 1: UUID + marker + canonical provisioning-root checks |
-| A-02 | High | Storage quota is not reserved transactionally; two concurrent writes can both pass the last-measured check | Fixing in Phase 2 |
+| A-01 | High | A soft-deleted workspace can be purged without an ownership proof from Runtime; a supplied path alone must never be trusted | **Fixed:** UUID + marker + canonical provisioning-root checks; blocked on mismatch |
+| A-02 | High | Storage quota is not reserved transactionally; two concurrent writes can both pass the last-measured check | **Fixed:** transactional reservations under user advisory lock |
 | A-03 | Medium | Snapshot rollback of a multi-file restore executes sequentially and has no compensation journal; a mid-way Runtime error can leave a partial restore without per-file report | Phase 3 gate |
 | A-04 | Medium | Network policy is executable-scoped, so it is not process-level isolation | Phase 7 gate; status text must not overclaim |
 | A-05 | Medium | `raw_file` serves inline images only, but SVG/HTML are attachment + `nosniff`; verify no browser rendering path bypasses this | Re-checked; no bypass found |

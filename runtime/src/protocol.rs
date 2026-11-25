@@ -39,6 +39,10 @@ pub mod kind {
 
     pub const WORKSPACE_USAGE: &str = "workspace.usage";
     pub const WORKSPACE_USAGE_RESULT: &str = "workspace.usage_result";
+    pub const WORKSPACE_PROVISION: &str = "workspace.provision";
+    pub const WORKSPACE_PROVISION_RESULT: &str = "workspace.provision_result";
+    pub const WORKSPACE_DELETE: &str = "workspace.delete";
+    pub const WORKSPACE_DELETE_RESULT: &str = "workspace.delete_result";
 
     pub const EXECUTION_STATUS: &str = "execution.status";
     pub const EXECUTION_STATUS_RESULT: &str = "execution.status_result";
@@ -110,6 +114,19 @@ pub struct RuntimeCapabilities {
     pub programs: Vec<ProgramDescriptor>,
     #[serde(default)]
     pub network_isolation: NetworkIsolationStatus,
+    #[serde(default)]
+    pub provisioning: ProvisioningStatus,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningStatus {
+    /// true — Runtime поддерживает `workspace.provision`.
+    #[serde(default)]
+    pub supported: bool,
+    /// true — настроен каталог для новых workspace.
+    #[serde(default)]
+    pub configured: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -332,6 +349,90 @@ pub struct WorkspaceUsage {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    pub path: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub additions: i64,
+    #[serde(default)]
+    pub deletions: i64,
+}
+
+/// Снимок файла до/после изменяющей операции Runtime.
+///
+/// Содержимое ограничено по размеру конфигурацией Runtime. При превышении
+/// `truncated=true`, и откат этого файла запрещён на backend.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSnapshot {
+    pub path: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub before_base64: Option<String>,
+    #[serde(default)]
+    pub before_sha256: Option<String>,
+    #[serde(default)]
+    pub after_base64: Option<String>,
+    #[serde(default)]
+    pub after_sha256: Option<String>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+/// `workspace.provision`: backend просит Runtime создать каталог нового
+/// workspace. Имя каталога — только UUID, никаких пользовательских строк.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProvisionRequest {
+    pub workspace_id: Uuid,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProvisionResult {
+    pub workspace_id: Uuid,
+    #[serde(default)]
+    pub ok: bool,
+    /// Абсолютный путь на компьютере Runtime. Передаётся только backend.
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// `workspace.delete`: backend просит Runtime физически удалить workspace
+/// после истечения срока хранения. Runtime сам подтверждает принадлежность
+/// каталога: путь должен быть `<provisioning_root>/<workspaceId>` и совпадать
+/// с маркером, созданным при provisioning.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceDeleteRequest {
+    pub workspace_id: Uuid,
+    #[serde(default)]
+    pub workspace_root: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceDeleteResult {
+    pub workspace_id: Uuid,
+    #[serde(default)]
+    pub ok: bool,
+    /// Объём и число файлов, измеренные перед удалением (для отчёта/метрик).
+    #[serde(default)]
+    pub bytes: i64,
+    #[serde(default)]
+    pub files: i64,
+    #[serde(default)]
+    pub already_absent: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolOutcome {
     pub result: Value,
     pub result_text: Option<String>,
@@ -339,6 +440,12 @@ pub struct ToolOutcome {
     pub duration_ms: i64,
     #[serde(default)]
     pub usage: Option<WorkspaceUsage>,
+    #[serde(default)]
+    pub changed_files: Vec<ChangedFile>,
+    #[serde(default)]
+    pub diff: Option<String>,
+    #[serde(default)]
+    pub snapshots: Vec<FileSnapshot>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

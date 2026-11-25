@@ -110,6 +110,13 @@ impl SettingsCache {
             .unwrap_or(fallback)
     }
 
+    /// Срок хранения мягко удалённых AI workspace (дней).
+    pub async fn ai_workspace_retention_days(&self, db: &PgPool, fallback: i64) -> i64 {
+        self.int(db, "limits.ai_workspace_retention_days")
+            .await
+            .unwrap_or(fallback)
+    }
+
     pub async fn session_ttl_hours(&self, db: &PgPool, fallback: i64) -> i64 {
         self.int(db, "security.session_ttl_hours")
             .await

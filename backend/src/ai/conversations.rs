@@ -444,6 +444,8 @@ pub struct SendMessage {
     pub content: String,
     pub attachment_ids: Option<Vec<Uuid>>,
     pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub skill_ids: Option<Vec<Uuid>>,
 }
 
 struct AttachmentText {
@@ -533,6 +535,18 @@ pub async fn send(
     }
     if conversation.mode == "agent" {
         actor.require("ai.agent.use")?;
+        // Не создаём сообщение, если в диалоге уже есть активный запуск.
+        let active: bool = sqlx::query_scalar(
+            "select exists(select 1 from ai_tasks
+                where conversation_id = $1
+                  and status in ('queued', 'running', 'waiting_approval'))",
+        )
+        .bind(conversation_id)
+        .fetch_one(&state.db)
+        .await?;
+        if active {
+            return Err(errors::task_already_running());
+        }
     } else {
         actor.require("ai.chat.use")?;
     }
@@ -609,15 +623,34 @@ pub async fn send(
     tx.commit().await?;
 
     if conversation.mode == "agent" {
-        let task = orchestrator::start_task(
+        let active: bool = sqlx::query_scalar(
+            "select exists(select 1 from ai_tasks
+                where conversation_id = $1
+                  and status in ('queued', 'running', 'waiting_approval'))",
+        )
+        .bind(conversation_id)
+        .fetch_one(&state.db)
+        .await?;
+        if active {
+            return Err(errors::task_already_running());
+        }
+        let task = match orchestrator::start_task(
             state,
             actor.id,
             conversation_id,
             user_message.id,
             &provider_content,
             request.idempotency_key.clone(),
+            request.skill_ids.clone().unwrap_or_default(),
         )
-        .await?;
+        .await
+        {
+            Ok(task) => task,
+            Err(error) => {
+                mark_message_failed(&state.db, user_message.id, &error.code, &error.message).await;
+                return Err(error);
+            }
+        };
         return Ok(json!({
             "userMessage": message_view(&user_message),
             "task": orchestrator::task_view(&task),
@@ -877,6 +910,7 @@ async fn run_chat_stream(
                 content,
                 usage,
                 finish_reason,
+                ..
             } => {
                 let final_content =
                     if !content.is_empty() && content.chars().count() >= buffer.chars().count() {
@@ -1096,6 +1130,7 @@ pub async fn regenerate(
             user_message_id,
             &last_user,
             None,
+            Vec::new(),
         )
         .await?;
         return Ok(json!({ "task": orchestrator::task_view(&task) }));
@@ -1175,9 +1210,16 @@ pub async fn edit_message(
     tx.commit().await?;
 
     if conversation.mode == "agent" {
-        let task =
-            orchestrator::start_task(state, actor.id, conversation_id, message_id, content, None)
-                .await?;
+        let task = orchestrator::start_task(
+            state,
+            actor.id,
+            conversation_id,
+            message_id,
+            content,
+            None,
+            Vec::new(),
+        )
+        .await?;
         return Ok(json!({ "task": orchestrator::task_view(&task) }));
     }
     let assistant = insert_assistant_placeholder(
@@ -1295,6 +1337,7 @@ pub async fn start_agent_for_message(
         message.id,
         &message.content,
         None,
+        Vec::new(),
     )
     .await?;
     Ok(orchestrator::task_view(&task))

@@ -62,6 +62,21 @@ Chromium SwiftShader делает 2000-файловую загрузку в ра
 | `E2E_USER_USERNAME` / `E2E_USER_PASSWORD`   | обычный пользователь                                           |
 | `E2E_LOCK_USERNAME` / `E2E_LOCK_PASSWORD`   | пользователь для проверки блокировки                           |
 | `DATABASE_URL`, `NEXUS_SECRET`              | передаются release-серверу (иначе берутся из корневого `.env`) |
+| `E2E_DATABASE_URL`                          | отдельная тестовая БД для всего набора (рекомендуется)         |
+| `E2E_POLYSTRATA_URL` / `_MODEL` / `_API_KEY` | включает `agent-real.spec.ts` с реальной PolyStrata (иначе skip) |
+| `NEXUS_RUNTIME_BIN`                         | путь к runtime для `ai_runtime_stand` (не E2E)                 |
+
+> Agent E2E (`agent.spec.ts`) создаёт отдельные provider/workspace/Runtime-узел
+> с уникальным `runId`, запускает настоящий `nexus-ai-runtime.exe` и требует
+> собранный `runtime/target/release`. Для изоляции от рабочей установки
+> задайте `E2E_DATABASE_URL` на отдельную базу.
+
+> Agent Workspace E2E (`agent-workspace.spec.ts`) использует тот же стенд и
+> проверяет Explorer/Editor, сохранение с `baseSha256`, конфликт версий,
+> изменения агента, diff, безопасный откат, Task Manager и мобильные панели.
+> Созданные через UI workspace остаются в E2E-базе (мягкое удаление не
+> выполняется), поэтому для чистого прогона используйте отдельную
+> `E2E_DATABASE_URL`.
 
 Если `e2e-admin` уже существует с другим паролем, задайте `E2E_ADMIN_PASSWORD`
 (CLI не сможет пересоздать пользователя).

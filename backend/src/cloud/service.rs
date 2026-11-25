@@ -570,20 +570,101 @@ pub async fn trash_entry(db: &PgPool, owner_id: Uuid, id: Uuid) -> ApiResult<()>
     Ok(())
 }
 
+/// Восстанавливает цепочку родительских папок записи из корзины.
+///
+/// Если запись удалили вместе с папкой, все предки тоже помечены `trashed_at`,
+/// поэтому одиночное восстановление файла возвращало его в корень. Здесь
+/// цепочка восстанавливается от корня к непосредственному родителю, чтобы
+/// запись вернулась ровно на прежнее место. Посторонние элементы папки при
+/// этом остаются в корзине — восстанавливается только путь к записи.
+///
+/// Возвращает актуальный `parent_id` записи (`None`, если родитель был удалён
+/// безвозвратно и восстановить его невозможно).
+async fn restore_parent_chain(
+    db: &PgPool,
+    owner_id: Uuid,
+    parent_id: Option<Uuid>,
+) -> ApiResult<Option<Uuid>> {
+    let Some(parent_id) = parent_id else {
+        return Ok(None);
+    };
+
+    // `depth` растёт вверх, поэтому сортировка по убыванию даёт путь от корня
+    // к непосредственному родителю.
+    let chain: Vec<(Uuid, Option<Uuid>, String, bool)> = sqlx::query_as(
+        "with recursive chain as (
+             select id, parent_id, name, 0 as depth, trashed_at
+             from cloud_entries where id = $1 and owner_id = $2
+             union all
+             select e.id, e.parent_id, e.name, c.depth + 1, e.trashed_at
+             from cloud_entries e join chain c on e.id = c.parent_id
+             where e.owner_id = $2
+         )
+         select id, parent_id, name, (trashed_at is not null) as trashed
+         from chain order by depth desc",
+    )
+    .bind(parent_id)
+    .bind(owner_id)
+    .fetch_all(db)
+    .await?;
+
+    if chain.is_empty() {
+        // Родитель уже удалён безвозвратно — запись вернётся в корень.
+        return Ok(None);
+    }
+    let mut current_parent: Option<Uuid> = None;
+
+    for (entry_id, row_parent, name, trashed) in &chain {
+        // Для верхней папки цепочки родитель — корень; каждая следующая
+        // папка вкладывается в предыдущую.
+        let new_parent = current_parent;
+        if *trashed {
+            let restore_name = match entry_name_taken(db, owner_id, new_parent, name).await? {
+                Some(_) => {
+                    let stamp = Utc::now().format("%Y%m%d-%H%M%S");
+                    format!("{name} (восстановлен {stamp})")
+                }
+                None => name.clone(),
+            };
+            sqlx::query(
+                "update cloud_entries
+                 set trashed_at = null, parent_id = $2, name = $3, updated_at = now()
+                 where id = $1 and owner_id = $4",
+            )
+            .bind(entry_id)
+            .bind(new_parent)
+            .bind(&restore_name)
+            .bind(owner_id)
+            .execute(db)
+            .await?;
+        } else if *row_parent != new_parent {
+            // Активная папка не может висеть под удалённым родителем; такой
+            // случай возможен только после повреждения цепочки.
+            sqlx::query(
+                "update cloud_entries set parent_id = $2, updated_at = now()
+                 where id = $1 and owner_id = $3",
+            )
+            .bind(entry_id)
+            .bind(new_parent)
+            .bind(owner_id)
+            .execute(db)
+            .await?;
+        }
+        current_parent = Some(*entry_id);
+    }
+
+    Ok(Some(parent_id))
+}
+
 pub async fn restore_entry(db: &PgPool, owner_id: Uuid, id: Uuid) -> ApiResult<CloudEntry> {
     let entry = load_entry(db, owner_id, id).await?;
     if entry.trashed_at.is_none() {
         return Ok(entry);
     }
 
-    // Если родитель в корзине или удалён — восстанавливаем в корень.
-    let mut parent = entry.parent_id;
-    if let Some(parent_id) = parent {
-        let parent_entry = load_entry(db, owner_id, parent_id).await?;
-        if parent_entry.trashed_at.is_some() {
-            parent = None;
-        }
-    }
+    // Возвращаем запись туда, откуда её удалили: если вместе с ней в корзину
+    // попала исходная папка (или цепочка папок), восстанавливаем и её.
+    let parent = restore_parent_chain(db, owner_id, entry.parent_id).await?;
 
     let restore_name = match entry_name_taken(db, owner_id, parent, &entry.name).await? {
         Some(_) => {

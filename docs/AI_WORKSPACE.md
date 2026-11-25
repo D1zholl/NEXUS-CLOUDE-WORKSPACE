@@ -91,6 +91,50 @@ workspace), policy timeout tools, `max_tool_calls_per_task` (по умолчан
 - `cancel_requested` задачи повторно получают `task.cancel`;
 - outbox-команды, отправленные до рестарта, помечаются `failed`.
 
+### 3.2. Agent Workspace (IDE) и файловый API
+
+`/workspace/ai/agent` — самостоятельная среда: Explorer, Editor и AI Agent.
+`/workspace/ai` (обычный Chat) не изменён.
+
+Файловый API (`backend/src/ai/workspace_files.rs`) выполняет операции **тем же**
+`tool.execute` Runtime, что и агент; backend не читает диск сервера и не имеет
+второго исполнителя. Runtime повторно проверяет root по allowlist, containment,
+symlink/junction/reparse point, JSON Schema, версию инструмента, лимиты файла и
+квоты workspace.
+
+Разграничение прав:
+
+- **агент** дополнительно ограничен `ai_workspaces.allowed_tools` и политиками
+  `ai_tool_policies`;
+- **владелец workspace** — RBAC (`ai.workspace.read`/`ai.workspace.write`),
+  владением, статусом workspace и глобальным `enabled` политики инструмента.
+  Allowlist агента к пользователю не применяется: он ограничивает модель, а не
+  владельца файлов;
+- `fs.read_base64`/`fs.write_base64` помечены `ui_only` и никогда не попадают в
+  tool definitions модели;
+- `program.run` через пользовательский API недоступен.
+
+Оптимистическая блокировка: `fs.write`/`fs.write_base64` принимают
+`expectedSha256`. Runtime сравнивает хеш текущего файла с ожидаемым и
+записывает под per-workspace mutex; проверка не отрывается от записи. Backend
+возвращает `409 AI_FILE_CONFLICT` с текущими содержимым и хешем — интерфейс
+показывает сравнение и не перезаписывает правку молча.
+
+Снимки изменений: Runtime возвращает `snapshots` (before/after, до 256 КиБ на
+файл, 2 МиБ и 100 файлов на операцию). Backend сохраняет их в
+`ai_file_snapshots` и использует для diff и отката. Откат выполняется только
+если текущий `sha256` совпадает с `afterSha256` снимка; иначе `409
+AI_RESTORE_CONFLICT` со списком конфликтов, файлы не изменяются.
+
+Создание workspace: `workspace.provision` → Runtime создаёт
+`<provisioningRoot>/<workspaceUuid>` (имя — только UUID) и возвращает путь
+только backend. Пользователь физический путь не видит. Удаление workspace
+владельцем — мягкое (`deleted_at`), файлы сохраняются.
+
+Квоты: workspace `quota_bytes/max_files/max_file_bytes` проверяет Runtime до
+записи; пользовательские `max_storage_bytes/max_files/max_file_bytes`
+проверяет backend по сумме usage workspace плюс дельта операции.
+
 ## 4. Approval
 
 Подтверждение требуется, если policy инструмента:
@@ -155,20 +199,35 @@ Approve/reject поддерживают `Idempotency-Key`.
   возвращается receipt).
 - Runtime делает то же для команд `sequence`/timestamp; повторный `messageId`
   возвращает сохранённый результат из памяти/`receipts.jsonl` без повторного
-  side effect.
+  side effect, включая ранее завершившиеся ошибкой операции.
 - `ai_runtime_commands.message_id` уникален; `ai_tool_executions` уникален по
   `(task_id, tool_call_id)` и `dispatch_message_id`.
 - HTTP-операции отправки сообщения, cancel и approve/reject поддерживают
   `Idempotency-Key` через общий `idempotency_keys`.
+- `receipts.jsonl` ротируется по размеру; архивные сегменты читаются при
+  старте, старые удаляются только сверх лимита (см. `AI_RUNTIME.md` §7).
+
+Повтор инструмента в Agent Mode ограничен: только `idempotent=true`, максимум
+две попытки, только для `AI_TOOL_FAILED`/ошибки до исполнения. Тайм-аут, обрыв
+соединения и `AI_EXECUTION_UNKNOWN` не повторяются — результат может быть уже
+применён.
 
 ## 6. Модель данных
 
-Миграции `backend/migrations/0019_ai.sql` и `0020_ai_hardening.sql`:
+Миграции `backend/migrations/0019_ai.sql`, `0020_ai_hardening.sql`,
+`0021_agent_mode_delta.sql`, `0022_ai_agent_workspace.sql` (аддитивная),
+`0023_ai_workspace_lifecycle.sql` и `0024_ai_quota_reservations.sql`:
 
 - `ai_provider_configs` — base URL, encrypted API key, model, generation, node;
 - `ai_runtime_nodes`, `ai_runtime_enrollment_codes`, `ai_runtime_commands`,
   `ai_runtime_events`, `ai_runtime_receipts`;
 - `ai_workspaces`, `ai_user_quotas`, `ai_workspace_usage_samples`;
+- `ai_file_snapshots` (миграция `0022`): before/after снимки изменённых агентом
+  файлов, diff и безопасный откат; `ai_workspaces.description/deleted_at`.
+- `ai_workspace_lifecycle`, `ai_workspace_purge_events` (миграция `0023`):
+  срок хранения, очередь физической очистки, история попыток и dry-run.
+- `ai_quota_reservations`, `ai_quota_events` (миграция `0024`): транзакционные
+  резервы квот и журнал решений.
 - `ai_conversations`, `ai_messages`, `ai_attachments`;
 - `ai_tasks`, `ai_task_events`, `ai_tool_executions`, `ai_tool_approvals`;
 - `ai_skills`, `ai_skill_files`, `ai_skill_versions`, `ai_skill_version_files`,
@@ -198,12 +257,25 @@ outbox БД: сохраняется только безопасная копия
 | POST | `/api/v1/ai/conversations/{id}/attachments` (multipart, text ≤5 МБ) |
 | GET/POST | `/api/v1/ai/tasks` |
 | GET | `/api/v1/ai/tasks/{id}` |
-| GET | `/api/v1/ai/tasks/{id}/events` |
+| GET | `/api/v1/ai/tasks/{id}/events` (`?after=<eventId>&perPage=`) |
 | POST | `/api/v1/ai/tasks/{id}/cancel` |
 | GET | `/api/v1/ai/tasks/{id}/executions` |
 | GET | `/api/v1/ai/approvals/pending` |
 | POST | `/api/v1/ai/approvals/{id}/approve`, `/reject` |
 | GET | `/api/v1/ai/workspaces`, `/workspaces/{id}`, `/workspaces/{id}/usage` |
+| POST | `/api/v1/ai/workspaces` (создать; Runtime выделяет каталог) |
+| PATCH/DELETE | `/api/v1/ai/workspaces/{id}` (переименовать / мягко удалить) |
+| GET | `/api/v1/ai/workspaces/deleted` (удалённые, доступные для восстановления) |
+| POST | `/api/v1/ai/workspaces/{id}/restore` |
+| GET | `/api/v1/ai/workspaces/{id}/overview` |
+| GET/DELETE | `/api/v1/ai/workspaces/{id}/files` (дерево / удалить) |
+| GET/PUT | `/api/v1/ai/workspaces/{id}/files/content` (с `baseSha256`) |
+| GET | `/api/v1/ai/workspaces/{id}/files/raw`, `/files/stat` |
+| POST | `/api/v1/ai/workspaces/{id}/files/directory`, `/move`, `/copy`, `/search`, `/upload` |
+| GET | `/api/v1/ai/workspaces/{id}/changes` |
+| GET | `/api/v1/ai/workspaces/{id}/snapshots/{snapshot_id}` |
+| POST | `/api/v1/ai/workspaces/{id}/snapshots/{snapshot_id}/restore` |
+| POST | `/api/v1/ai/workspaces/{id}/tasks/{task_id}/restore` |
 | POST | `/api/v1/ai/workspaces/{id}/usage/refresh` |
 | GET | `/api/v1/ai/skills`, `/skills/{id}` |
 | GET | `/api/v1/ai/tools` |
@@ -216,14 +288,18 @@ outbox БД: сохраняется только безопасная копия
 - `/admin/runtime-nodes…` (list/detail/revoke/disable/enable/rotate-token);
 - `/admin/enrollment-codes…`;
 - `/admin/providers…` (admin list включает отключённые; create/update/disable/test/models/status);
-- `/admin/workspaces…`, `/admin/workspaces/{id}/usage/refresh`;
+- `/admin/workspaces…`, `/admin/workspaces/{id}/tools/grant-defaults`,
+  `/admin/workspaces/{id}/usage/refresh`;
+- `/admin/workspaces/lifecycle`, `/admin/workspaces/purge/dry-run`,
+  `/admin/workspaces/purge/metrics`, `/admin/workspaces/{id}/purge`;
 - `/admin/skills…` (import ZIP, update, enable/disable, delete, assignments,
   `…/versions`, `…/versions/{version}`, `…/versions/{version}/restore`);
 - `/admin/tools`, `/admin/tools/{id}`;
 - `/admin/programs`, `/admin/programs/{id}` (risk, enabled, networkPolicy, memory);
 - `/admin/mcp-connections…` (CRUD, discover, tools, assignments);
 - `/admin/mcp-tools/{id}` (risk/approvalPolicy/enabled);
-- `/admin/quotas`, `/admin/quotas/{user_id}`.
+- `/admin/quotas`, `/admin/quotas/{user_id}`,
+  `/admin/quotas/reservations/{id}/release` (снять зависший резерв).
 
 Все ответы — `{success,data}` / `{success:false,error,request_id}`. OpenAPI 3.1
 доступен на `/api/v1/openapi.json`; Swagger — при `NEXUS_ENABLE_DOCS=true`.
@@ -294,6 +370,27 @@ MCP выключен по умолчанию. Поток:
 Ограничение: поддерживается MCP Streamable HTTP (`http`/`https`). stdio-MCP
 транспорт не реализован.
 
+## 11.1. Совместимость allowlist существующих workspace
+
+Новые workspace получают безопасный набор инструментов (risk low/medium и
+server-side `skill.load`/`skills.list`), включая `fs.stat`. Workspace, созданные
+до появления новых инструментов, не содержат их в `allowed_tools`.
+
+Права не расширяются автоматически:
+
+1. `GET /api/v1/ai/admin/workspaces` возвращает `missingSafeTools` — чего не
+   хватает из безопасного набора.
+2. Администратор в AI Management видит предупреждение и нажимает «Добавить
+   безопасные» либо вызывает
+   `POST /api/v1/ai/admin/workspaces/{id}/tools/grant-defaults`.
+3. Добавляются только low/medium и Skills; высокорисковые инструменты
+   (`fs.delete`, `fs.move`, `program.run`) по-прежнему выдаются только полным
+   редактированием workspace.
+4. Операция пишется в audit (`ai.workspace.tools_granted`) с добавленными id.
+
+Повторный вызов идемпотентен: если добавлять нечего, возвращается текущее
+состояние.
+
 ## 12. Безопасность
 
 - Cookie-сессия браузера не используется Runtime.
@@ -318,6 +415,14 @@ MCP выключен по умолчанию. Поток:
   на время запуска блокируется сеть всех процессов этого executable.
 - MCP: SSRF-проверка на backend и Runtime, redirects запрещены, результаты
   недоверенные, отдельные assignments и approval.
+- Agent Workspace: ownership и `deleted_at` проверяются на каждом запросе;
+  путь нормализуется на backend и повторно на Runtime; SVG/HTML не отдаются
+  inline (только `attachment` + `nosniff`), inline разрешён для растровых
+  изображений; загрузка ограничена 8 МБ и лимитом workspace.
+- Изменяющие файловые операции поддерживают `Idempotency-Key`; сохранение
+  защищено `expectedSha256`, откат — проверкой `afterSha256`.
+- Пользователь не может создать workspace на произвольном Runtime: только на
+  устройстве, где у него уже есть workspace.
 
 ## 13. Ограничения текущей версии
 
@@ -328,18 +433,38 @@ MCP выключен по умолчанию. Поток:
    `docs/AI_PRODUCTION_AUDIT.md`.
 2. **PolyStrata**: на машине аудита отсутствует; `real_polystrata_smoke`
    (`#[ignore]`) и `scripts/ai-polystrata-smoke.ps1` требуют реальный endpoint.
-3. **max_parallel_tasks** и пользовательские storage-quota
-   (`max_storage_bytes/max_files/max_file_bytes`) хранятся и отображаются, но
-   admission control использует `max_concurrent_tasks`, `max_tasks_per_day`,
-   `max_tool_calls_per_task`, `max_task_seconds` и workspace-квоты Runtime.
+3. **max_parallel_tasks** применяется при создании задачи.
+   Storage-quota (`max_storage_bytes/max_files/max_file_bytes`) проверяются
+   транзакционно: `usage + активные резервы + ожидаемое изменение`. Резерв
+   создаётся до отправки команды и подтверждается фактическим usage Runtime.
+   Известная ошибка освобождает резерв, неизвестный результат оставляет его
+   `uncertain` до замера или административного release.
 4. **Network isolation** требует прав администратора и блокирует executable
    целиком на время запуска. Полноценный AppContainer/process-level egress не
    реализован.
 5. **MCP stdio** не реализован; только Streamable HTTP.
-6. **Quota concurrency** между несколькими Runtime-инстансами одного workspace
-   не поддерживается; не создавайте такую конфигурацию.
+6. **Quota concurrency** координируется в PostgreSQL (advisory lock
+   пользователя + таблица резервов), поэтому несколько Runtime-инстансов и
+   параллельных HTTP/tool-операций не могут одновременно превысить лимит.
+   Runtime дополнительно проверяет фактический usage и завершает процесс при
+   превышении.
 7. **Заголовок диалога** строится детерминированно из первого сообщения (без
    отдельного вызова модели) — безопасный fallback по ТЗ.
+8. **Снимки файлов** ограничены 256 КиБ на файл и 2 МиБ на операцию. Для
+   больших файлов, рекурсивного удаления каталогов и внешних изменений откат
+   недоступен; UI показывает `truncated` и блокирует кнопку. Откат не
+   уничтожает более новые пользовательские изменения: при расхождении
+   `afterSha256` возвращается `409 AI_RESTORE_CONFLICT`.
+9. **Удаление workspace** двухфазное. HTTP-обработчик выполняет мягкое
+   удаление и ставит запись в `ai_workspace_lifecycle`; фоновый worker после
+   срока хранения (`limits.ai_workspace_retention_days`, по умолчанию 30 дней)
+   отправляет Runtime `workspace.delete`. Runtime подтверждает, что каталог —
+   это `<provisioning_root>/<workspaceId>` с совпадающим маркером, переносит
+   его в `.nexus-trash` и удаляет. Только после подтверждения backend очищает
+   snapshots и usage-семплы. До очистки workspace можно восстановить; при
+   конфликте имени добавляется суффикс «восстановлен N».
+10. **Поиск по именам** в Explorer использует дерево глубины 6 и лимит Runtime
+    (1000 записей); в очень больших workspace результаты усечены.
 
 ## 14. Запуск
 
@@ -397,9 +522,12 @@ cargo test --all-targets
 Полный сценарий для второго компьютера:
 
 ```powershell
-.\scripts\ai-two-machine-check.ps1 -BackendUrl https://nexus.example `
-  -EnrollmentCode nxe_... -PolyStrataUrl http://127.0.0.1:8080/v1
+.\scripts\ai-two-machine-verify.ps1 -BackendUrl https://nexus.example `
+  -AdminUser admin -AdminPasswordEnv NEXUS_ADMIN_PASSWORD `
+  -ProviderUrl http://127.0.0.1:8080/v1 -Model <model>
 ```
+
+Полный порядок и шаблон отчёта: [`TWO_MACHINE_CHECK.md`](TWO_MACHINE_CHECK.md).
 
 Troubleshooting:
 
@@ -412,6 +540,8 @@ Troubleshooting:
   Runtime и дочерние процессы вручную; задача не считается отменённой.
 - `AI_EXECUTION_UNKNOWN` — результат операции неизвестен после разрыва/рестарта:
   не повторяйте автоматически, проверьте файл/процесс.
+- `AI_RECEIPT_ROTATED` — операция уже исполнялась, но полный receipt удалён
+  ротацией; повтор запрещён. Проверьте результат вручную.
 - MCP `error`/SSRF — включите `allowPrivateNetwork` только для доверенного
   локального сервера; проверьте DNS и endpoint.
 
@@ -420,7 +550,13 @@ Troubleshooting:
 В PostgreSQL входят: AI-таблицы 0019/0020, включая `ai_skill_version_files`,
 `ai_runtime_commands`, `ai_runtime_receipts`, `ai_mcp_*`. Для Skills/artifacts
 отдельных файлов на диске нет — всё в БД. На Runtime сохраняйте:
-`state/device.json` (секрет), `state/receipts.jsonl`, `runtime.toml`.
+`state/device.json` (секрет), `state/receipts*.jsonl` (включая архивы и
+`receipts.index.jsonl` — он запрещает повторное исполнение), `runtime.toml`.
 `NEXUS_SECRET` должен совпадать с моментом сохранения API keys/MCP secrets:
 после смены секрета ключи нужно ввести заново. При восстановлении на новом
 Runtime устройство регистрируется заново (старый token отзывается).
+
+Снимки изменений агента (`ai_file_snapshots`, миграция `0022`) также хранятся в
+PostgreSQL: это копии содержимого изменённых файлов (до 256 КиБ на файл) для
+diff и отката. Они входят в обычный backup БД и удаляются каскадно вместе с
+задачей или workspace; отдельной автоматической ротации по возрасту нет.

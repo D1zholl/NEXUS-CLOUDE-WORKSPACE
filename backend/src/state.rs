@@ -282,6 +282,15 @@ impl AppState {
         self.settings.trash_retention_days(&self.db, 30).await
     }
 
+    /// Срок хранения мягко удалённых AI workspace (дней).
+    /// Fallback — 30 дней; 0/некорректное значение не допускается каталогом.
+    pub async fn ai_workspace_retention_days(&self) -> i64 {
+        self.settings
+            .ai_workspace_retention_days(&self.db, 30)
+            .await
+            .clamp(1, 3650)
+    }
+
     /// Число параллельных загрузок в браузере.
     pub async fn upload_concurrency(&self) -> usize {
         self.settings.upload_concurrency(&self.db, 3).await

@@ -213,6 +213,29 @@ pub fn read_text(path: &Path, max_bytes: usize) -> Result<(String, bool)> {
     Ok((text, truncated))
 }
 
+/// Читает бинарный файл с ограничением размера. Возвращает байты и признак
+/// усечения. Содержимое никогда не интерпретируется как текст.
+pub fn read_bytes(path: &Path, max_bytes: usize) -> Result<(Vec<u8>, bool)> {
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() {
+        bail!("путь не является файлом");
+    }
+    if metadata.len() as usize > max_bytes {
+        bail!(
+            "файл больше допустимого размера для чтения ({} байт)",
+            max_bytes
+        );
+    }
+    let file = std::fs::File::open(path)?;
+    let mut buffer = Vec::with_capacity(metadata.len() as usize);
+    file.take(max_bytes as u64 + 1).read_to_end(&mut buffer)?;
+    let truncated = buffer.len() > max_bytes;
+    if truncated {
+        buffer.truncate(max_bytes);
+    }
+    Ok((buffer, truncated))
+}
+
 pub fn write_atomic(path: &Path, content: &[u8], overwrite: bool) -> Result<()> {
     let parent = path
         .parent()

@@ -5,24 +5,95 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use dashmap::DashMap;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::config::LimitsConfig;
 use crate::filesystem::{
-    Workspace, directory_usage, list_entries, normalize_relative, read_text, search, sha256_hex,
-    write_atomic,
+    Workspace, directory_usage, list_entries, normalize_relative, read_bytes, read_text, search,
+    sha256_hex, write_atomic,
 };
 use crate::patch;
 use crate::process::{ProcessOutcome, ProgramRegistry};
-use crate::protocol::{ToolDescriptor, ToolExecuteRequest, ToolOutcome, WorkspaceUsage};
+use crate::protocol::{
+    ChangedFile, FileSnapshot, ToolDescriptor, ToolExecuteRequest, ToolOutcome, WorkspaceUsage,
+};
 
 pub struct ToolExecutor {
     limits: LimitsConfig,
     allowed_roots: Vec<PathBuf>,
     programs: ProgramRegistry,
     locks: DashMap<uuid::Uuid, Arc<Mutex<()>>>,
+}
+
+/// Бюджет снимков на одну tool-операцию: ограничивает объём данных, которые
+/// Runtime возвращает backend для diff/откатa.
+struct SnapshotBudget {
+    max_file_bytes: usize,
+    max_total_bytes: usize,
+    max_files: usize,
+    used_bytes: usize,
+    used_files: usize,
+}
+
+impl SnapshotBudget {
+    fn new(limits: &LimitsConfig) -> Self {
+        Self {
+            max_file_bytes: limits.snapshot_max_bytes,
+            max_total_bytes: limits.snapshot_max_total_bytes,
+            max_files: limits.snapshot_max_files,
+            used_bytes: 0,
+            used_files: 0,
+        }
+    }
+
+    /// Возвращает (base64, sha256, truncated). `None` — снимок невозможен.
+    fn capture(&mut self, bytes: Option<&[u8]>) -> (Option<String>, Option<String>, bool) {
+        let Some(bytes) = bytes else {
+            return (None, None, false);
+        };
+        let sha = sha256_hex(bytes);
+        if self.used_files >= self.max_files
+            || bytes.len() > self.max_file_bytes
+            || self.used_bytes + bytes.len() > self.max_total_bytes
+        {
+            return (None, Some(sha), true);
+        }
+        self.used_bytes += bytes.len();
+        self.used_files += 1;
+        (Some(BASE64.encode(bytes)), Some(sha), false)
+    }
+}
+
+fn snapshot_entry(
+    budget: &mut SnapshotBudget,
+    path: String,
+    action: &str,
+    before: Option<&[u8]>,
+    after: Option<&[u8]>,
+) -> FileSnapshot {
+    let (before_base64, before_sha256, before_truncated) = budget.capture(before);
+    let (after_base64, after_sha256, after_truncated) = budget.capture(after);
+    FileSnapshot {
+        path,
+        action: action.to_owned(),
+        before_base64,
+        before_sha256,
+        after_base64,
+        after_sha256,
+        truncated: before_truncated || after_truncated,
+    }
+}
+
+fn read_for_snapshot(path: &std::path::Path, limit: usize) -> Option<Vec<u8>> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() as usize > limit {
+        return None;
+    }
+    std::fs::read(path).ok()
 }
 
 impl ToolExecutor {
@@ -81,6 +152,24 @@ impl ToolExecutor {
                 }),
             ),
             descriptor(
+                "fs.read_base64",
+                "Чтение бинарного файла",
+                "Читает файл как Base64 (изображения и другие бинарные данные).",
+                "filesystem",
+                "low",
+                "ai.workspace.read",
+                true,
+                30,
+                json!({
+                    "type": "object", "additionalProperties": false,
+                    "properties": {
+                        "path": { "type": "string", "minLength": 1, "maxLength": 500 },
+                        "maxBytes": { "type": "integer", "minimum": 1, "maximum": 8388608 }
+                    },
+                    "required": ["path"]
+                }),
+            ),
+            descriptor(
                 "fs.write",
                 "Запись файла",
                 "Создаёт или перезаписывает файл.",
@@ -94,9 +183,30 @@ impl ToolExecutor {
                     "properties": {
                         "path": { "type": "string", "minLength": 1, "maxLength": 500 },
                         "content": { "type": "string" },
-                        "overwrite": { "type": "boolean" }
+                        "overwrite": { "type": "boolean" },
+                        "expectedSha256": { "type": "string", "minLength": 64, "maxLength": 64 }
                     },
                     "required": ["path", "content"]
+                }),
+            ),
+            descriptor(
+                "fs.write_base64",
+                "Запись бинарного файла",
+                "Создаёт или перезаписывает файл из Base64 (загрузка с компьютера).",
+                "filesystem",
+                "medium",
+                "ai.workspace.write",
+                false,
+                60,
+                json!({
+                    "type": "object", "additionalProperties": false,
+                    "properties": {
+                        "path": { "type": "string", "minLength": 1, "maxLength": 500 },
+                        "contentBase64": { "type": "string" },
+                        "overwrite": { "type": "boolean" },
+                        "expectedSha256": { "type": "string", "minLength": 64, "maxLength": 64 }
+                    },
+                    "required": ["path", "contentBase64"]
                 }),
             ),
             descriptor(
@@ -116,6 +226,23 @@ impl ToolExecutor {
                         "maxResults": { "type": "integer", "minimum": 1, "maximum": 200 }
                     },
                     "required": ["query"]
+                }),
+            ),
+            descriptor(
+                "fs.stat",
+                "Метаданные",
+                "Размер, тип и время изменения файла/каталога.",
+                "filesystem",
+                "low",
+                "ai.workspace.read",
+                true,
+                15,
+                json!({
+                    "type": "object", "additionalProperties": false,
+                    "properties": {
+                        "path": { "type": "string", "minLength": 1, "maxLength": 500 }
+                    },
+                    "required": ["path"]
                 }),
             ),
             descriptor(
@@ -239,11 +366,24 @@ impl ToolExecutor {
             .iter()
             .find(|descriptor| descriptor.tool_id == request.tool_id)
             .ok_or_else(|| anyhow::anyhow!("tool_id не разрешён Runtime"))?;
+        if request.version != descriptor.version {
+            bail!(
+                "версия инструмента {} не поддерживается Runtime (ожидается {})",
+                request.tool_id,
+                descriptor.version
+            );
+        }
         validate_schema(&descriptor.input_schema, &request.arguments)?;
         let workspace = Workspace::new(&request.workspace_root, &self.allowed_roots)?;
         let mutable = matches!(
             request.tool_id.as_str(),
-            "fs.write" | "fs.copy" | "fs.move" | "fs.delete" | "fs.mkdir" | "fs.apply_patch"
+            "fs.write"
+                | "fs.write_base64"
+                | "fs.copy"
+                | "fs.move"
+                | "fs.delete"
+                | "fs.mkdir"
+                | "fs.apply_patch"
         );
         let lock = self
             .locks
@@ -257,30 +397,65 @@ impl ToolExecutor {
         };
         let result = match request.tool_id.as_str() {
             "fs.list" => self.fs_list(&workspace, &request.arguments)?,
-            "fs.read" => self.fs_read(&workspace, &request.arguments)?,
-            "fs.write" => self.fs_write(&workspace, &request.arguments, request)?,
+            "fs.read" => self.fs_read(&workspace, &request.arguments, false)?,
+            "fs.read_base64" => self.fs_read(&workspace, &request.arguments, true)?,
+            "fs.write" => {
+                let mut budget = SnapshotBudget::new(&self.limits);
+                return self.complete_mutable(
+                    &workspace,
+                    request,
+                    self.fs_write(&workspace, &request.arguments, request, &mut budget)?,
+                );
+            }
+            "fs.write_base64" => {
+                let mut budget = SnapshotBudget::new(&self.limits);
+                return self.complete_mutable(
+                    &workspace,
+                    request,
+                    self.fs_write_base64(&workspace, &request.arguments, request, &mut budget)?,
+                );
+            }
             "fs.search" => self.fs_search(&workspace, &request.arguments)?,
+            "fs.stat" => self.fs_stat(&workspace, &request.arguments)?,
             "fs.mkdir" => self.fs_mkdir(&workspace, &request.arguments)?,
-            "fs.move" => self.fs_move(&workspace, &request.arguments)?,
-            "fs.copy" => self.fs_copy(&workspace, &request.arguments, request)?,
-            "fs.delete" => self.fs_delete(&workspace, &request.arguments)?,
-            "fs.apply_patch" => self.fs_apply_patch(&workspace, &request.arguments, request)?,
+            "fs.move" => {
+                let mut budget = SnapshotBudget::new(&self.limits);
+                return self.complete_mutable(
+                    &workspace,
+                    request,
+                    self.fs_move(&workspace, &request.arguments, &mut budget)?,
+                );
+            }
+            "fs.copy" => {
+                let mut budget = SnapshotBudget::new(&self.limits);
+                return self.complete_mutable(
+                    &workspace,
+                    request,
+                    self.fs_copy(&workspace, &request.arguments, request, &mut budget)?,
+                );
+            }
+            "fs.delete" => {
+                let mut budget = SnapshotBudget::new(&self.limits);
+                return self.complete_mutable(
+                    &workspace,
+                    request,
+                    self.fs_delete(&workspace, &request.arguments, &mut budget)?,
+                );
+            }
+            "fs.apply_patch" => {
+                let mut budget = SnapshotBudget::new(&self.limits);
+                return self.complete_mutable(
+                    &workspace,
+                    request,
+                    self.fs_apply_patch(&workspace, &request.arguments, request, &mut budget)?,
+                );
+            }
             "program.run" => {
                 return self
                     .program_run(&workspace, &request.arguments, request, cancel)
                     .await;
             }
             _ => bail!("неизвестный инструмент"),
-        };
-        // Usage измеряется после изменяющих операций. Ошибка измерения не
-        // отменяет уже выполненную операцию, но попадает в usage.error.
-        let usage = if mutable {
-            Some(usage_for(
-                &workspace,
-                self.limits.max_directory_entries.saturating_mul(100),
-            ))
-        } else {
-            None
         };
         let result_text = serde_json::to_string_pretty(&result).unwrap_or_default();
         Ok(ToolOutcome {
@@ -293,7 +468,49 @@ impl ToolExecutor {
             ),
             exit_code: None,
             duration_ms: 0,
+            usage: None,
+            changed_files: Vec::new(),
+            diff: None,
+            snapshots: Vec::new(),
+        })
+    }
+
+    /// Завершает изменяющую операцию: считает usage и собирает снимки.
+    fn complete_mutable(
+        &self,
+        workspace: &Workspace,
+        request: &ToolExecuteRequest,
+        (result, snapshots): (Value, Vec<FileSnapshot>),
+    ) -> Result<ToolOutcome> {
+        let usage = Some(usage_for(
+            workspace,
+            self.limits.max_directory_entries.saturating_mul(100),
+        ));
+        let result_text = serde_json::to_string_pretty(&result).unwrap_or_default();
+        let changed_files = changed_files_for(&request.tool_id, &request.arguments, &result);
+        let diff = if request.tool_id == "fs.apply_patch" {
+            request
+                .arguments
+                .get("patch")
+                .and_then(|value| value.as_str())
+                .map(|value| value.chars().take(65_536).collect::<String>())
+        } else {
+            None
+        };
+        Ok(ToolOutcome {
+            result,
+            result_text: Some(
+                result_text
+                    .chars()
+                    .take(request.max_output_bytes.max(1024) as usize)
+                    .collect(),
+            ),
+            exit_code: None,
+            duration_ms: 0,
             usage,
+            changed_files,
+            diff,
+            snapshots,
         })
     }
 
@@ -315,20 +532,36 @@ impl ToolExecutor {
         )
     }
 
-    fn fs_read(&self, workspace: &Workspace, args: &Value) -> Result<Value> {
+    fn fs_read(&self, workspace: &Workspace, args: &Value, base64: bool) -> Result<Value> {
         let relative = required_str(args, "path")?;
         let path = workspace.resolve_existing(relative)?;
         let max_bytes = args
             .get("maxBytes")
             .and_then(|value| value.as_u64())
-            .unwrap_or(self.limits.max_tool_output_bytes as u64)
+            .unwrap_or(if base64 {
+                8 * 1024 * 1024
+            } else {
+                self.limits.max_tool_output_bytes as u64
+            })
             .min(self.limits.max_file_bytes) as usize;
+        if base64 {
+            let (bytes, truncated) = read_bytes(&path, max_bytes)?;
+            return Ok(json!({
+                "path": workspace.relative(&path),
+                "contentBase64": BASE64.encode(&bytes),
+                "size": bytes.len(),
+                "truncated": truncated,
+                "sha256": sha256_hex(&bytes),
+                "encoding": "base64",
+            }));
+        }
         let (text, truncated) = read_text(&path, max_bytes)?;
         Ok(json!({
             "path": workspace.relative(&path),
-            "content": text.chars().take(self.limits.max_tool_output_bytes).collect::<String>(),
+            "content": text,
             "truncated": truncated,
             "sha256": sha256_hex(text.as_bytes()),
+            "encoding": "utf8",
         }))
     }
 
@@ -337,9 +570,50 @@ impl ToolExecutor {
         workspace: &Workspace,
         args: &Value,
         limits: &ToolExecuteRequest,
-    ) -> Result<Value> {
+        budget: &mut SnapshotBudget,
+    ) -> Result<(Value, Vec<FileSnapshot>)> {
         let relative = required_str(args, "path")?;
         let content = required_str(args, "content")?;
+        self.write_content(
+            workspace,
+            limits,
+            budget,
+            relative,
+            content.as_bytes(),
+            args,
+            "write",
+        )
+    }
+
+    fn fs_write_base64(
+        &self,
+        workspace: &Workspace,
+        args: &Value,
+        limits: &ToolExecuteRequest,
+        budget: &mut SnapshotBudget,
+    ) -> Result<(Value, Vec<FileSnapshot>)> {
+        let relative = required_str(args, "path")?;
+        let encoded = required_str(args, "contentBase64")?;
+        if encoded.len() > 12 * 1024 * 1024 {
+            bail!("загружаемый файл слишком большой");
+        }
+        let content = BASE64
+            .decode(encoded)
+            .map_err(|_| anyhow::anyhow!("некорректные Base64-данные файла"))?;
+        self.write_content(workspace, limits, budget, relative, &content, args, "write")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_content(
+        &self,
+        workspace: &Workspace,
+        limits: &ToolExecuteRequest,
+        budget: &mut SnapshotBudget,
+        relative: &str,
+        content: &[u8],
+        args: &Value,
+        action: &str,
+    ) -> Result<(Value, Vec<FileSnapshot>)> {
         let max_file = self.effective_max_file(limits);
         if content.len() as u64 > max_file {
             bail!("содержимое превышает лимит файла workspace");
@@ -348,26 +622,75 @@ impl ToolExecutor {
             .get("overwrite")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
+        let expected = args
+            .get("expectedSha256")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty());
         let path = workspace.resolve(relative)?;
         if path == workspace.root {
             bail!("нельзя записать корень workspace");
         }
-        let old_size = if path.is_file() {
+        let exists = path.is_file();
+        let old_size = if exists {
             std::fs::metadata(&path)?.len()
         } else {
             0
         };
-        if old_size == 0 && !path.exists() {
+        // Оптимистическая блокировка: сравнение и запись выполняются под
+        // per-workspace mutex, поэтому проверка не отрывается от записи.
+        if let Some(expected) = expected {
+            if !exists {
+                bail!("AI_FILE_CONFLICT: файл был удалён или перемещён");
+            }
+            let (current, _) = read_bytes(&path, max_file as usize)?;
+            if sha256_hex(&current) != expected.to_lowercase() {
+                bail!("AI_FILE_CONFLICT: файл изменён после открытия");
+            }
+        }
+        let before = if exists {
+            read_for_snapshot(&path, budget.max_file_bytes)
+        } else {
+            None
+        };
+        if exists && !overwrite {
+            // Перезапись существующего файла разрешена только с overwrite=true,
+            // кроме явного expectedSha256 (редактор подтвердил версию).
+            if expected.is_none() {
+                bail!("файл уже существует; укажите overwrite=true");
+            }
+        }
+        if !exists {
             self.ensure_quota(workspace, limits, content.len() as i64, 1)?;
         } else {
             self.ensure_quota(workspace, limits, content.len() as i64 - old_size as i64, 0)?;
         }
-        write_atomic(&path, content.as_bytes(), overwrite)?;
-        Ok(json!({
-            "path": workspace.relative(&path),
-            "bytes": content.len(),
-            "sha256": sha256_hex(content.as_bytes()),
-        }))
+        write_atomic(&path, content, overwrite || expected.is_some())?;
+        let relative_path = workspace.relative(&path);
+        let sha = sha256_hex(content);
+        let mut snapshots = Vec::new();
+        if budget.used_files < budget.max_files {
+            let mut entry = snapshot_entry(
+                budget,
+                relative_path.clone(),
+                if exists { action } else { "create" },
+                before.as_deref(),
+                Some(content),
+            );
+            // Существующий файл без снимка before нельзя восстановить:
+            // откат удалил бы файл вместо возврата старого содержимого.
+            if exists && before.is_none() {
+                entry.truncated = true;
+            }
+            snapshots.push(entry);
+        }
+        Ok((
+            json!({
+                "path": relative_path,
+                "bytes": content.len(),
+                "sha256": sha,
+            }),
+            snapshots,
+        ))
     }
 
     fn fs_search(&self, workspace: &Workspace, args: &Value) -> Result<Value> {
@@ -392,6 +715,20 @@ impl ToolExecutor {
         )
     }
 
+    fn fs_stat(&self, workspace: &Workspace, args: &Value) -> Result<Value> {
+        let relative = required_str(args, "path")?;
+        let path = workspace.resolve_existing(relative)?;
+        let metadata = std::fs::metadata(&path)?;
+        Ok(json!({
+            "path": workspace.relative(&path),
+            "type": if metadata.is_dir() { "dir" } else { "file" },
+            "size": if metadata.is_file() { metadata.len() } else { 0 },
+            "modified": metadata.modified().ok().map(chrono::DateTime::<chrono::Utc>::from),
+            "readonly": metadata.permissions().readonly(),
+            "symlink": false,
+        }))
+    }
+
     fn fs_mkdir(&self, workspace: &Workspace, args: &Value) -> Result<Value> {
         let relative = required_str(args, "path")?;
         normalize_relative(relative)?;
@@ -404,7 +741,12 @@ impl ToolExecutor {
         Ok(json!({ "path": workspace.relative(&path), "created": true }))
     }
 
-    fn fs_move(&self, workspace: &Workspace, args: &Value) -> Result<Value> {
+    fn fs_move(
+        &self,
+        workspace: &Workspace,
+        args: &Value,
+        budget: &mut SnapshotBudget,
+    ) -> Result<(Value, Vec<FileSnapshot>)> {
         let from = workspace.resolve_existing(required_str(args, "from")?)?;
         let to = workspace.resolve(required_str(args, "to")?)?;
         if to == workspace.root {
@@ -414,9 +756,21 @@ impl ToolExecutor {
             .get("overwrite")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
+        let from_is_file = from.is_file();
+        let before = if from_is_file {
+            read_for_snapshot(&from, budget.max_file_bytes)
+        } else {
+            None
+        };
+        let mut overwritten_before = None;
+        let mut target_had_file = false;
         if to.exists() {
             if !overwrite {
                 bail!("целевой путь уже существует");
+            }
+            if to.is_file() {
+                target_had_file = true;
+                overwritten_before = read_for_snapshot(&to, budget.max_file_bytes);
             }
             if to.is_dir() {
                 std::fs::remove_dir_all(&to)?;
@@ -430,11 +784,37 @@ impl ToolExecutor {
             }
         }
         std::fs::rename(&from, &to)?;
-        Ok(json!({
-            "from": workspace.relative(&from),
-            "to": workspace.relative(&to),
-            "moved": true,
-        }))
+        let from_relative = workspace.relative(&from);
+        let to_relative = workspace.relative(&to);
+        let mut snapshots = Vec::new();
+        if from_is_file {
+            let mut entry = snapshot_entry(
+                budget,
+                to_relative.clone(),
+                "move",
+                overwritten_before.as_deref(),
+                before.as_deref(),
+            );
+            if before.is_none() || (target_had_file && overwritten_before.is_none()) {
+                entry.truncated = true;
+            }
+            snapshots.push(entry);
+        } else {
+            snapshots.push(FileSnapshot {
+                path: to_relative.clone(),
+                action: "move".to_owned(),
+                truncated: true,
+                ..Default::default()
+            });
+        }
+        Ok((
+            json!({
+                "from": from_relative,
+                "to": to_relative,
+                "moved": true,
+            }),
+            snapshots,
+        ))
     }
 
     fn fs_copy(
@@ -442,7 +822,8 @@ impl ToolExecutor {
         workspace: &Workspace,
         args: &Value,
         limits: &ToolExecuteRequest,
-    ) -> Result<Value> {
+        budget: &mut SnapshotBudget,
+    ) -> Result<(Value, Vec<FileSnapshot>)> {
         let from = workspace.resolve_existing(required_str(args, "from")?)?;
         if !from.is_file() {
             bail!("копирование поддерживается только для файлов");
@@ -468,21 +849,57 @@ impl ToolExecutor {
         let new_files = if to.exists() { 0 } else { 1 };
         self.ensure_quota(workspace, limits, delta, new_files)?;
         std::fs::copy(&from, &to)?;
-        Ok(json!({
-            "from": workspace.relative(&from),
-            "to": workspace.relative(&to),
-            "bytes": metadata.len(),
-            "copied": true,
-        }))
+        let to_relative = workspace.relative(&to);
+        let after = read_for_snapshot(&to, budget.max_file_bytes);
+        let snapshots = vec![snapshot_entry(
+            budget,
+            to_relative.clone(),
+            "copy",
+            None,
+            after.as_deref(),
+        )];
+        Ok((
+            json!({
+                "from": workspace.relative(&from),
+                "to": to_relative,
+                "bytes": metadata.len(),
+                "copied": true,
+            }),
+            snapshots,
+        ))
     }
 
-    fn fs_delete(&self, workspace: &Workspace, args: &Value) -> Result<Value> {
+    fn fs_delete(
+        &self,
+        workspace: &Workspace,
+        args: &Value,
+        budget: &mut SnapshotBudget,
+    ) -> Result<(Value, Vec<FileSnapshot>)> {
         let path = workspace.resolve_existing(required_str(args, "path")?)?;
         let recursive = args
             .get("recursive")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
         let metadata = std::fs::metadata(&path)?;
+        let relative = workspace.relative(&path);
+        let snapshots = if metadata.is_file() {
+            let before = read_for_snapshot(&path, budget.max_file_bytes);
+            let mut entry =
+                snapshot_entry(budget, relative.clone(), "delete", before.as_deref(), None);
+            if before.is_none() {
+                entry.truncated = true;
+            }
+            vec![entry]
+        } else {
+            // Содержимое каталога не снимается: откат для рекурсивного удаления
+            // недоступен и это явно помечается.
+            vec![FileSnapshot {
+                path: relative.clone(),
+                action: "delete".to_owned(),
+                truncated: true,
+                ..Default::default()
+            }]
+        };
         if metadata.is_dir() {
             if !recursive {
                 bail!("для удаления каталога требуется recursive=true");
@@ -491,7 +908,7 @@ impl ToolExecutor {
         } else {
             std::fs::remove_file(&path)?;
         }
-        Ok(json!({ "path": workspace.relative(&path), "deleted": true }))
+        Ok((json!({ "path": relative, "deleted": true }), snapshots))
     }
 
     fn fs_apply_patch(
@@ -499,7 +916,8 @@ impl ToolExecutor {
         workspace: &Workspace,
         args: &Value,
         request: &ToolExecuteRequest,
-    ) -> Result<Value> {
+        budget: &mut SnapshotBudget,
+    ) -> Result<(Value, Vec<FileSnapshot>)> {
         let patch_text = required_str(args, "patch")?;
         let strip = args
             .get("strip")
@@ -517,13 +935,29 @@ impl ToolExecutor {
         } else {
             None
         };
-        patch::apply_checked(
+        let outcome = patch::apply_checked(
             workspace,
             patch_text,
             strip,
             self.effective_max_file(request),
             quota.as_ref(),
-        )
+        )?;
+        let mut snapshots = Vec::new();
+        for file in outcome.snapshots {
+            let after_truncated = file.after.is_none() && file.action != "delete";
+            let mut entry = snapshot_entry(
+                budget,
+                file.path,
+                &file.action,
+                file.before.as_deref(),
+                file.after.as_deref(),
+            );
+            if after_truncated && entry.truncated {
+                entry.truncated = true;
+            }
+            snapshots.push(entry);
+        }
+        Ok((outcome.summary, snapshots))
     }
 
     fn effective_max_file(&self, limits: &ToolExecuteRequest) -> u64 {
@@ -707,6 +1141,85 @@ fn process_outcome(outcome: ProcessOutcome) -> ToolOutcome {
         exit_code: outcome.exit_code,
         duration_ms: outcome.duration_ms,
         usage: None,
+        changed_files: Vec::new(),
+        diff: None,
+        snapshots: Vec::new(),
+    }
+}
+
+fn changed_files_for(tool_id: &str, args: &Value, result: &Value) -> Vec<ChangedFile> {
+    let path_of = |key: &str| {
+        result
+            .get(key)
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_owned()
+    };
+    match tool_id {
+        "fs.write" => vec![ChangedFile {
+            path: path_of("path"),
+            action: "write".to_owned(),
+            additions: args
+                .get("content")
+                .and_then(|value| value.as_str())
+                .map(|value| value.lines().count() as i64)
+                .unwrap_or(0),
+            deletions: 0,
+        }],
+        "fs.copy" => vec![ChangedFile {
+            path: path_of("to"),
+            action: "copy".to_owned(),
+            additions: 0,
+            deletions: 0,
+        }],
+        "fs.move" => vec![ChangedFile {
+            path: path_of("to"),
+            action: "move".to_owned(),
+            additions: 0,
+            deletions: 0,
+        }],
+        "fs.delete" => vec![ChangedFile {
+            path: path_of("path"),
+            action: "delete".to_owned(),
+            additions: 0,
+            deletions: 0,
+        }],
+        "fs.mkdir" => vec![ChangedFile {
+            path: path_of("path"),
+            action: "mkdir".to_owned(),
+            additions: 0,
+            deletions: 0,
+        }],
+        "fs.apply_patch" => result
+            .get("files")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| ChangedFile {
+                        path: item
+                            .get("path")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
+                            .to_owned(),
+                        action: item
+                            .get("action")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("modify")
+                            .to_owned(),
+                        additions: item
+                            .get("additions")
+                            .and_then(|value| value.as_i64())
+                            .unwrap_or(0),
+                        deletions: item
+                            .get("deletions")
+                            .and_then(|value| value.as_i64())
+                            .unwrap_or(0),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
 }
 
@@ -791,5 +1304,36 @@ mod tests {
         assert!(validate_schema(&schema, &json!({"path":"a"})).is_ok());
         assert!(validate_schema(&schema, &json!({"path":"a","extra":1})).is_err());
         assert!(validate_schema(&schema, &json!({})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod changed_file_tests {
+    use super::*;
+
+    #[test]
+    fn maps_apply_patch_files() {
+        let result = json!({
+            "files": [
+                { "path": "src/a.rs", "action": "modify", "additions": 3, "deletions": 1 },
+                { "path": "src/b.rs", "action": "create", "additions": 5, "deletions": 0 }
+            ]
+        });
+        let files = changed_files_for("fs.apply_patch", &json!({}), &result);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "src/a.rs");
+        assert_eq!(files[0].additions, 3);
+    }
+
+    #[test]
+    fn maps_write_path() {
+        let files = changed_files_for(
+            "fs.write",
+            &json!({ "content": "a\nb" }),
+            &json!({ "path": "a.txt" }),
+        );
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].action, "write");
+        assert_eq!(files[0].additions, 2);
     }
 }

@@ -20,6 +20,9 @@ target/
 debug/
 release/
 node_modules/
+build/
+build-cache/
+NEXUS-Standalone-release/
 frontend/dist/
 frontend/.vite/
 NEXUS-Launcher/target/

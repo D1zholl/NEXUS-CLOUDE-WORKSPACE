@@ -219,6 +219,9 @@ impl McpRegistry {
             exit_code: None,
             duration_ms: 0,
             usage: None,
+            changed_files: Vec::new(),
+            diff: None,
+            snapshots: Vec::new(),
         })
     }
 

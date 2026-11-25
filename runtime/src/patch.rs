@@ -31,10 +31,26 @@ struct AppliedFile {
     relative: String,
     action: &'static str,
     content: Option<Vec<u8>>,
+    before: Option<Vec<u8>>,
     additions: usize,
     deletions: usize,
     old_size: u64,
     new_size: u64,
+}
+
+/// Изменение одного файла, пригодное для снимка (до/после).
+#[derive(Debug, Clone)]
+pub struct PatchSnapshotFile {
+    pub path: String,
+    pub action: String,
+    pub before: Option<Vec<u8>>,
+    pub after: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PatchOutcome {
+    pub summary: Value,
+    pub snapshots: Vec<PatchSnapshotFile>,
 }
 
 /// Квоты workspace для предварительной проверки патча.
@@ -48,7 +64,7 @@ pub struct Quota {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn apply(workspace: &Workspace, patch: &str, strip: usize, max_bytes: u64) -> Result<Value> {
-    apply_checked(workspace, patch, strip, max_bytes, None)
+    Ok(apply_checked(workspace, patch, strip, max_bytes, None)?.summary)
 }
 
 pub fn apply_checked(
@@ -57,7 +73,7 @@ pub fn apply_checked(
     strip: usize,
     max_bytes: u64,
     quota: Option<&Quota>,
-) -> Result<Value> {
+) -> Result<PatchOutcome> {
     if patch.len() > 1024 * 1024 {
         bail!("патч превышает 1 МБ");
     }
@@ -89,6 +105,7 @@ pub fn apply_checked(
             .ok_or_else(|| anyhow::anyhow!("патч не содержит имени файла"))?;
 
         let mut old_size = 0u64;
+        let mut before_bytes: Option<Vec<u8>> = None;
         let old_content = match old_relative.as_deref() {
             Some(relative) if !relative.is_empty() => {
                 let path = workspace.resolve_existing(relative)?;
@@ -97,6 +114,7 @@ pub fn apply_checked(
                     bail!("файл {relative} больше допустимого размера");
                 }
                 old_size = metadata.len();
+                before_bytes = Some(std::fs::read(&path)?);
                 let (text, _) = read_text(&path, max_bytes as usize)?;
                 split_lines(&text)
             }
@@ -165,6 +183,7 @@ pub fn apply_checked(
             relative: target_relative,
             action,
             content,
+            before: before_bytes,
             additions,
             deletions,
             old_size,
@@ -203,8 +222,9 @@ pub fn apply_checked(
 
     // Двухфазная запись: все проверки пройдены, применяем изменения.
     let mut summary = Vec::new();
+    let mut snapshots = Vec::new();
     for file in applied {
-        match file.action {
+        let after_bytes = match file.action {
             "delete" => {
                 if file.path.exists() {
                     if file.path.is_dir() {
@@ -213,12 +233,20 @@ pub fn apply_checked(
                     std::fs::remove_file(&file.path)
                         .with_context(|| format!("не удалось удалить {}", file.relative))?;
                 }
+                None
             }
             _ => {
-                let bytes = file.content.unwrap_or_default();
+                let bytes = file.content.clone().unwrap_or_default();
                 write_atomic(&file.path, &bytes, file.action == "modify")?;
+                Some(bytes)
             }
-        }
+        };
+        snapshots.push(PatchSnapshotFile {
+            path: file.relative.clone(),
+            action: file.action.to_owned(),
+            before: file.before,
+            after: after_bytes,
+        });
         summary.push(json!({
             "path": file.relative,
             "action": file.action,
@@ -226,11 +254,14 @@ pub fn apply_checked(
             "deletions": file.deletions,
         }));
     }
-    Ok(json!({
-        "files": summary,
-        "filesChanged": summary.len(),
-        "note": "Изменения применены внутри workspace Runtime."
-    }))
+    Ok(PatchOutcome {
+        summary: json!({
+            "files": summary,
+            "filesChanged": summary.len(),
+            "note": "Изменения применены внутри workspace Runtime."
+        }),
+        snapshots,
+    })
 }
 
 fn parse_patch(patch: &str) -> Result<Vec<FilePatch>> {

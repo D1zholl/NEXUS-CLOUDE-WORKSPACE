@@ -208,15 +208,6 @@ pub async fn decide(
     } else {
         // Отклонение останавливает задачу: модель не должна обходить решение.
         sqlx::query(
-            "update ai_tasks
-                set status = 'cancelled', stage = 'rejected', status_text = 'Действие отклонено',
-                    finished_at = now(), updated_at = now()
-              where id = $1 and status = 'waiting_approval'",
-        )
-        .bind(approval.task_id)
-        .execute(&state.db)
-        .await?;
-        sqlx::query(
             "update ai_tool_executions
                 set status = 'cancelled', error_code = 'AI_APPROVAL_REJECTED',
                     error_message = 'Пользователь отклонил действие.', updated_at = now()
@@ -225,11 +216,19 @@ pub async fn decide(
         .bind(approval.execution_id)
         .execute(&state.db)
         .await?;
-        state.realtime.publish_user(
-            "ai.task.cancelled",
-            approval.requester_id,
-            json!({ "taskId": approval.task_id, "message": "Действие отклонено" }),
-        );
+        orchestrator::finalize(
+            state,
+            approval.task_id,
+            "cancelled",
+            "rejected",
+            "Действие отклонено пользователем",
+            Some("AI_APPROVAL_REJECTED"),
+            Some("Пользователь отклонил опасное действие."),
+            None,
+            None,
+            Value::Null,
+        )
+        .await?;
     }
 
     Ok(json!({

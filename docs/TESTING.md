@@ -1,4 +1,4 @@
-# Тестирование NEXUS WORKSPACE
+﻿# Тестирование NEXUS WORKSPACE
 
 Документ фиксирует **фактические** команды и результаты прогонов, матрицу
 покрытия требований и известные пробелы. Результаты ниже получены 20.11.2026
@@ -115,19 +115,20 @@ Invoke-ScriptAnalyzer -Path tests -Recurse -Settings ./PSScriptAnalyzerSettings.
 |---|---|---|
 | Форматирование | `cargo fmt --all -- --check` | **exit 0** |
 | Clippy | `cargo clippy -j 2 --all-targets -- -D warnings` | **exit 0**, предупреждений нет |
-| Backend-тесты | `cargo test -j 2 --no-fail-fast` | **368 passed, 0 failed** (21.11.2026), включая `launcher_repository_tests` (8) и unit-тесты формата MyLauncher; PostgreSQL `nexus_test` |
-| OpenAPI-тесты | `cargo test -j 2 --test openapi_tests` | **5 passed**, 117 путей / 142 операции |
-| Миграции на пустой БД | `cargo test -j 2 --test migrations_tests` | **1 passed**: одноразовая БД, все 18 миграций, `_sqlx_migrations` сверен с файлами, `cloud_trash` — view |
-| Проверка конфигурации | `nexus check --json` | **ok=true**, PostgreSQL 17.12, `migrations = 18`, тома 3, администраторы 1 |
+| Backend-тесты | `cargo test -j 2 --no-fail-fast` | **443 passed, 0 failed, 1 ignored** (25.11.2026), PostgreSQL `nexus_test`; 33 test-бинаря |
+| OpenAPI-тесты | `cargo test --test openapi_tests` | **5 passed**, 207 путей / 251 операция |
+| Миграции на пустой БД | `cargo test -j 2 --test migrations_tests` | **2 passed**: все 24 миграции на одноразовой БД; `_sqlx_migrations` сверен |
+| Обновление существующей БД | `nexus migrate` на dev-базе | **PASS**: 24 миграции, `ai_workspace_lifecycle` и `ai_quota_reservations` присутствуют |
+| Проверка конфигурации | `nexus check --json` | **ok=true**, PostgreSQL 17.12, миграции 24, тома 3, администраторы 1 |
 | Live HTTP smoke | `nexus serve` на `127.0.0.1:18080` | `/api/v1/health` → `ok`, `/api/packs?channel=stable` → `200`, `{"packs":[]}` на реальной БД |
 | TypeScript | `npm run typecheck` | **exit 0** |
-| Frontend-тесты | `npm run test` | **92 passed, 0 failed**, 17 файлов; 23.11.2026 |
+| Frontend-тесты | `npm run test` | **126 passed, 0 failed**, 22 файла; 25.11.2026 (включая 14 тестов Agent IDE) |
 | Production-сборка | `npm run build` | успешно: CSS 98,68 кБ (gzip 18,04 кБ); 23.11.2026 |
 | E2E с MyLauncher | ручной запуск клиента | **не выполнялся** в среде разработки: нет GUI-сессии и лицензионного запуска Minecraft. Проверены HTTP-контракт и Range интеграционными тестами; см. 3.3 |
-| E2E (I1 + K4 + AI) | `npx playwright test` | **26 passed, 0 failed** (5,5 мин), release backend + production frontend + отдельная БД; новые AI Workspace/Management/MCP smoke |
-| AI integration (backend) | `cargo test --test ai_tests` | **16 passed**: enrollment/revoke, encrypted provider key, Chat без tools, Agent tool cycle, approvals, Skills/version snapshots, module gate, ownership, MCP discovery/execution, usage, cancel confirmation, idempotency, recovery |
-| AI Runtime | `cd runtime; cargo test --all-targets` | **28 passed, 1 ignored** (`real_polystrata_smoke`): WS tool execution/dedup, SSE, traversal, patch/quota, args/schema, MCP JSON-RPC, network helpers |
-| AI full regression | `cargo test -j 1` | **411 passed, 0 failed, 1 ignored** (`logs/backend-full-tests-final.log`) |
+| E2E (I1 + K4 + AI) | `npx playwright test` | **38 passed, 1 skipped, 0 failed** (2,3 мин), release backend + production frontend + реальный Runtime; Agent Workspace IDE + все прежние сценарии; skip — реальная PolyStrata |
+| AI integration (backend) | `cargo test --test ai_tests` | **28 passed**: enrollment/revoke, encrypted provider key, Chat без tools, Agent tool cycle, approvals, Skills/version snapshots, module gate, ownership, MCP discovery/execution, usage, cancel confirmation, idempotency, recovery, файловый API, lifecycle, purge worker, конкурентные квоты |
+| AI Runtime | `cd runtime; cargo test --all-targets` | **41 passed, 1 ignored** (`real_polystrata_smoke`): WS tool execution/dedup, SSE, traversal, patch/quota, args/schema, MCP JSON-RPC, network helpers, снимки, provisioning, `workspace.delete` |
+| AI full regression | `cargo test -j 2 --no-fail-fast` | **443 passed, 0 failed, 1 ignored** (`build/phase2-backend-tests.log`) |
 | E2E Chromium/Chrome/Edge | `npm run e2e:browsers -- e2e/system.spec.ts` | после добавления AI Management не перезапускался; предыдущий прогон 10 passed (14 страниц), 20.11.2026 |
 | PowerShell | `Invoke-ScriptAnalyzer -Path deployment,tests -Recurse -Settings ./PSScriptAnalyzerSettings.psd1` | **0 нарушений** (базовые правила K3, PSScriptAnalyzer 1.25) |
 | I5 load | `tests/load.ps1 -FileCount 16 -FileSizeMb 4` | **PASS**: 200 списков (avg 1,8 мс, p95 2,5 мс), 16 файлов / 64 МиБ, 32 скачивания с SHA, 24/24 Range, private 13,8 → 17,2 МБ (+3,4); отчёт `docs/reports/load-20261120-i5.md` |
@@ -138,6 +139,10 @@ Invoke-ScriptAnalyzer -Path tests -Recurse -Settings ./PSScriptAnalyzerSettings.
 | L2 WebSocket против службы | `tests/ws-smoke.ps1` | **PASS**: hello-кадр, `job.progress`, анонимное подключение отклонено; exit 0 |
 | L2 load против службы 1.0.0 | `tests/load.ps1 -Username smokeadmin -CleanupVolume` | **PASS**: 200 списков (avg 1,5 мс, p95 2,2 мс), 16 × 4 МиБ, 32/32 SHA, 24/24 Range, private 11,1 → 14,6 МБ (+3,5 при лимите +20); отчёт `docs/reports/load-20261120-l2.md` |
 | L2 resilience против службы | `tests/resilience.ps1 -ServiceName NexusWorkspace -DatabaseUrl <служба>` | **PASS**: VHDX offline/`NO_VOLUME_AVAILABLE`, восстановление SHA, обрыв 0/1048576 и продолжение, `Restart-Service` 0,79 с с живой сессией, C2 `running→pending→running→completed`, рестарт службы 12,92 с; отчёт `docs/reports/resilience-20261120-l2.md` |
+| Backend unit (Agent IDE) | `cargo test --lib ai::` | 9 тестов: нормализация путей и traversal, имя upload, line stats, кодирование снимков; `ui_only`-инструменты не попадают в defaults; схема `expectedSha256`; фильтры статусов задач |
+| Backend integration (Agent IDE) | `cargo test --test ai_tests` | +2: чужой workspace возвращает `404` и не инициирует `tool.execute`; сохранение существующего файла без `baseSha256` → `428 AI_FILE_PRECONDITION_REQUIRED` до записи |
+| Frontend unit (Agent IDE) | `npm run test` | +14 тестов: построчный/unified diff, тип и язык файла, store вкладок/буферов/dirty/раскладки |
+| E2E Agent IDE | `npx playwright test e2e/agent-workspace.spec.ts` | 4 сценария: Explorer/Editor/сохранение/preview, конфликт версий, изменения агента + diff + безопасный откат + Task Manager, мобильные панели; реальный Runtime + stub PolyStrata |
 
 ### 3.2. Backend по файлам
 
@@ -268,9 +273,71 @@ DnD `mods → config` и длинный ввод в модальной форм�
   `npm run lint`.
 - Полный регрессионный прогон Phase 9: `cargo test -j 1` (см.
   `logs/backend-full-tests-phase9.log`), Playwright E2E, существующие
-  smoke/ws/resilience/load сценарии. `-j 2` не используется: интеграционные
-  тесты делят `nexus_test` и очищают схему.
+  smoke/ws/resilience/load сценарии. Исторически `-j 1` использовался, так как
+  интеграционные тесты делят `nexus_test` и очищают схему; финальный прогон
+  24.11.2026 прошёл с `-j 2` (см. ниже).
 
-Двухмашинный сценарий: `scripts/ai-two-machine-check.ps1`. Без его реального
-прохождения проект не объявляется Production Ready (см.
-`docs/AI_PRODUCTION_AUDIT.md`).
+Двухмашинный сценарий: `scripts/ai-two-machine-verify.ps1`, порядок и шаблон
+отчёта — `docs/TWO_MACHINE_CHECK.md`. Прогон на двух физических ПК в этой
+среде **не выполнялся**; без него Agent Mode нельзя объявлять Production Ready.
+
+### Жизненный цикл и квоты (25.11.2026)
+
+- `backend/tests/ai_tests.rs` дополнен тестами lifecycle: мягкое удаление,
+  восстановление, dry-run без side effects, успешная очистка после
+  `workspace.delete`, `blocked` при чужом владении.
+- Квоты: 10 параллельных резервов при лимите 1000 байт (ровно 5 проходят),
+  идемпотентность по `operationId`, истечение зависшего резерва, подтверждение
+  фактическим usage, общий user-wide лимит для двух workspace.
+- `runtime`: удаление только managed workspace, идемпотентный повтор, отказ
+  вне provisioning root, чужой маркер, legacy-путь без маркера.
+- Миграции `0023`/`0024` проверены на пустой БД и на существующей dev-базе
+  (`nexus migrate`: 24 применённые миграции, обе новые таблицы присутствуют).
+- OpenAPI перегенерирован: 207 путей / 251 операция.
+
+### Agent Mode stabilization (24.11.2026)
+
+| Набор | Результат |
+|---|---|
+| backend `cargo test -j 2 --no-fail-fast` | **421 passed, 0 failed** (`logs/agent-mode-tests-final-2.log`) |
+| `ai_runtime_stand` (release Runtime) | **1 passed** (`logs/agent-mode-stand-final.log`) |
+| runtime `cargo test --all-targets` | **36 passed, 1 ignored** |
+| frontend `npm run test` | **112 passed**, 19 файлов |
+| `migrations_tests` | **2 passed**: полный набор + 0021 (дубли/идемпотентность) |
+| `openapi_tests` | **5 passed** (186 путей / 225 операций) |
+| Playwright `agent.spec.ts` | **7 passed**: реальный Runtime + stub PolyStrata |
+| Playwright `agent-real.spec.ts` | skipped без `E2E_POLYSTRATA_URL` |
+| Playwright весь набор | **33 passed, 1 skipped**, 0 failed (`logs/e2e-full-final-2.log`) |
+| Playwright `agent.spec.ts` + `ai.spec.ts` после финальной правки UI | **8 passed** (`logs/e2e-agent-final-3.log`) |
+| Standalone | `manifest.json`/`SHA256SUMS` — 0 расхождений; запуск с очищенным PATH (`logs/standalone-build-final-2.log`) |
+
+Покрытые сценарии: создание диалога и Agent Mode, streaming-текст, tool call,
+approval approve/reject, результат инструмента, несколько последовательных
+инструментов, файлы и diff, cancel с подтверждением, F5 во время выполнения,
+восстановление истории/событий, offline Runtime и reconnect без повторного
+enrollment. Инкрементальные события дополнительно покрыты unit-тестами
+`frontend/src/lib/taskEvents.test.ts` и backend-проверкой `events?after`.
+
+`agent-real.spec.ts` намеренно не подменяется mock-ответом: без реальной
+PolyStrata он помечается skipped.
+
+### AI Agent IDE (25.11.2026)
+
+| Набор | Результат |
+|---|---|
+| backend `cargo test -j 1 --no-fail-fast` | **433 passed, 0 failed, 1 ignored** (`logs/agent-ide-backend-tests-final3.log`) |
+| `ai_tests` | **21 passed** (+3 Agent IDE: изоляция workspace, обязательный `baseSha256`, квота файла) |
+| backend unit Agent IDE | **9 тестов**: пути/traversal, upload name, line stats, кодирование снимков, `ui_only`, `expectedSha256`, фильтры статусов |
+| runtime `cargo test --all-targets` | **36 passed**, 1 ignored (`real_polystrata_smoke`) |
+| `migrations_tests` | **2 passed** (22 миграции; 0022 аддитивная) |
+| `openapi_tests` | **5 passed** (200 путей / 244 операции) |
+| frontend `npm run test` | **126 passed**, 22 файла (+14: diff, fileLanguage, store Agent IDE) |
+| frontend `npm run typecheck` / `lint` / `build` | успешно, 0 warnings |
+| Playwright `agent-workspace.spec.ts` | **5 passed**: Explorer/Editor/save/preview, конфликт версий, изменения+diff+безопасный откат+Task Manager, создание workspace через UI, мобильные панели |
+| Playwright весь набор | **38 passed, 1 skipped, 0 failed** (2,3 мин; skip — реальная PolyStrata) |
+
+Покрытые сценарии Agent IDE: реальные файлы Runtime через `tool.execute`,
+оптимистическая блокировка `expectedSha256`, конфликт не перезаписывает
+пользовательский код, снимки и откат только при совпадении `afterSha256`,
+изоляция workspace, квоты пользователя до Runtime, открытие старой задачи без
+повторного запуска, сохранение раскладки, мобильное переключение панелей.

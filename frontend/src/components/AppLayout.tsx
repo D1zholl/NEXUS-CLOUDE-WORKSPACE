@@ -52,6 +52,7 @@ const CRUMBS: Record<string, { section: string; title: string }> = {
   '/workspace/launcher': { section: 'Пространство', title: 'Launcher API' },
   '/workspace/storage': { section: 'Пространство', title: 'NEXUS Cloud Storage' },
   '/workspace/ai': { section: 'Пространство', title: 'AI Workspace' },
+  '/workspace/ai/agent': { section: 'Пространство', title: 'AI Agent Workspace' },
   '/s': { section: 'Cloud', title: 'Ссылка общего доступа' },
 };
 
@@ -119,7 +120,14 @@ export function AppLayout() {
               />
             ) : null}
             {canAi && aiOn ? (
-              <NavItem to="/workspace/ai" icon={<Bot aria-hidden="true" />} label="AI Workspace" />
+              <>
+                <NavItem to="/workspace/ai" icon={<Bot aria-hidden="true" />} label="AI Workspace" end />
+                <NavItem
+                  to="/workspace/ai/agent"
+                  icon={<Bot aria-hidden="true" />}
+                  label="AI Agent IDE"
+                />
+              </>
             ) : null}
           </nav>
 

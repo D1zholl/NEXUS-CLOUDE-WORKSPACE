@@ -15,10 +15,13 @@ pub mod mcp;
 pub mod models;
 pub mod orchestrator;
 pub mod providers;
+pub mod quota;
 pub mod routes;
 pub mod runtime;
 pub mod skills;
 pub mod tools;
+pub mod workspace_files;
+pub mod workspace_lifecycle;
 pub mod workspaces;
 
 use std::sync::Arc;
@@ -57,6 +60,7 @@ pub enum ChatChunk {
         content: String,
         usage: serde_json::Value,
         finish_reason: Option<String>,
+        tool_calls: Vec<crate::ai::runtime::protocol::ToolCall>,
     },
     Failed {
         code: String,
@@ -73,6 +77,9 @@ pub struct AiState {
     pub chats: DashMap<Uuid, ActiveChat>,
     /// Токены отмены Agent Task.
     pub cancels: DashMap<Uuid, CancellationToken>,
+    /// AgentRun, цикл которого уже выполняется в этом процессе. Защищает от
+    /// параллельного запуска одного task_id из start/resume/reconcile.
+    pub runs: DashMap<Uuid, ()>,
     pub stream_events: AtomicU64,
 }
 
@@ -83,8 +90,18 @@ impl AiState {
             secrets: SecretBox::from_secret(secret),
             chats: DashMap::new(),
             cancels: DashMap::new(),
+            runs: DashMap::new(),
             stream_events: AtomicU64::new(0),
         }
+    }
+
+    /// Пытается стать единственным исполнителем задачи.
+    pub fn begin_run(&self, task_id: Uuid) -> bool {
+        self.runs.insert(task_id, ()).is_none()
+    }
+
+    pub fn end_run(&self, task_id: Uuid) {
+        self.runs.remove(&task_id);
     }
 
     pub fn note_stream_event(&self) {

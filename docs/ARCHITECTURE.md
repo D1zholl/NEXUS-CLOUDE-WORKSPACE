@@ -516,3 +516,41 @@ module gate `ai`. Он переиспользует cookie-сессии, RBAC, `
 который сам открывает исходящее WSS-соединение; входящих портов нет. PostgreSQL
 хранит диалоги, задачи, шаги, approvals и executions; WebSocket — только
 уведомление. Подробности и протокол: [`AI_WORKSPACE.md`](AI_WORKSPACE.md).
+
+### AI Agent Workspace (IDE)
+
+`/workspace/ai/agent` — отдельный интерфейс из трёх областей: Explorer, Editor,
+AI Agent. Backend не читает диск сервера: файловый API
+(`backend/src/ai/workspace_files.rs`) отправляет те же `tool.execute` в Runtime,
+что и orchestrator, и ждёт `RuntimeReply::Tool`. Runtime повторно проверяет
+containment, reparse points, схему, лимиты и квоты.
+
+Ключевые механизмы:
+
+- **Два уровня прав.** Allowlist `ai_workspaces.allowed_tools` ограничивает
+  модель; владелец workspace работает по RBAC и владению. Служебные
+  `fs.read_base64`/`fs.write_base64` помечены `ui_only` и не передаются модели.
+- **Оптимистическая блокировка.** `expectedSha256` проверяется под
+  per-workspace mutex в Runtime; backend возвращает `409 AI_FILE_CONFLICT` с
+  текущей версией.
+- **Снимки.** Runtime возвращает before/after (лимиты 256 КиБ/2 МиБ/100 файлов),
+  backend хранит их в `ai_file_snapshots`, строит diff и откатывает только при
+  совпадении `afterSha256`; иначе `AI_RESTORE_CONFLICT`.
+- **Provisioning.** `workspace.provision` создаёт
+  `<provisioning_root>/<workspaceUuid>` с маркером `.nexus-workspace.json`;
+  путь возвращается только backend.
+- **Удаление.** HTTP-обработчик только помечает workspace удалённым и пишет
+  `ai_workspace_lifecycle`; фоновый worker после retention отправляет
+  `workspace.delete`. Runtime подтверждает владение каталогом и удаляет его
+  атомарным rename в `.nexus-trash`; backend очищает snapshots/usage только
+  после подтверждения.
+- **Квоты.** Workspace-квоты проверяет Runtime; backend проверяет
+  `max_storage_bytes/max_files/max_file_bytes` транзакционно:
+  `usage + активные резервы + изменение`, под advisory lock пользователя.
+  Резерв подтверждается фактическим usage, известная ошибка освобождает его,
+  неизвестный результат остаётся `uncertain`.
+
+Схема данных: миграции `0022_ai_agent_workspace.sql` (`ai_file_snapshots`,
+`ai_workspaces.description/deleted_at`), `0023_ai_workspace_lifecycle.sql`
+(`ai_workspace_lifecycle`, `ai_workspace_purge_events`),
+`0024_ai_quota_reservations.sql` (`ai_quota_reservations`, `ai_quota_events`).

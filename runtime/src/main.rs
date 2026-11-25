@@ -7,6 +7,7 @@ mod patch;
 mod process;
 mod protocol;
 mod provider;
+mod receipts;
 mod runtime;
 mod service;
 mod tools;

@@ -42,6 +42,12 @@ C:\NexusAI\
 - `server.url` — `wss://<nexus>/api/v1/ai/runtime/connect`;
 - `server.enroll_url` — `https://<nexus>`;
 - `storage.allowed_roots` — корни, внутри которых разрешены workspace;
+- `storage.provisioning_root` — каталог, в котором Runtime создаёт новые
+  workspace по команде backend `workspace.provision` (пусто — первый
+  `allowed_roots`, но не сам корень). Имя каталога — только UUID workspace;
+- `limits.snapshot_max_bytes` / `snapshot_max_total_bytes` / `snapshot_max_files`
+  — лимиты снимков before/after для diff и откатa (по умолчанию 256 КиБ,
+  2 МиБ, 100 файлов);
 - `provider.base_url` — обычно `http://127.0.0.1:8080/v1`;
   `NEXUS_AI_PROVIDER_API_KEY` (env) переопределяет `provider.api_key`, чтобы не
   хранить секрет в файле;
@@ -118,14 +124,32 @@ Runtime поддерживает SSE (`data: {...}`, `[DONE]`), нескольк
 |---|---|---|
 | `fs.list` | low | список файлов |
 | `fs.read` | low | чтение UTF-8 |
-| `fs.write` | medium | запись/создание |
+| `fs.read_base64` | low | чтение бинарного файла (только файловый API пользователя, не модель) |
+| `fs.write` | medium | запись/создание; опционально `expectedSha256` |
+| `fs.write_base64` | medium | запись бинарного файла (только файловый API пользователя, не модель) |
 | `fs.search` | low | поиск по файлам |
+| `fs.stat` | low | метаданные файла |
 | `fs.mkdir` | low | создание каталога |
 | `fs.move` | high | перемещение |
 | `fs.copy` | medium | копирование |
 | `fs.delete` | high | удаление |
 | `fs.apply_patch` | medium | unified diff |
 | `program.run` | high | зарегистрированная программа |
+
+Изменяющие операции возвращают `snapshots` (before/after) в пределах лимитов.
+Если снимок усечён (`truncated=true`), backend запрещает откат этого файла.
+`expectedSha256` в `fs.write`/`fs.write_base64` проверяется под per-workspace
+mutex непосредственно перед записью: при расхождении операция отклоняется
+(`AI_FILE_CONFLICT`), файл не изменяется.
+
+`workspace.provision` создаёт `<provisioning_root>/<uuid>`, маркер
+`.nexus-workspace.json` и возвращает путь только backend; пользователю
+абсолютный путь не передаётся.
+
+`workspace.delete` (вызывается backend после retention) принимает только
+прямой дочерний каталог `provisioning_root` с именем UUID. Runtime сверяет
+маркер, отклоняет symlink/junction и чужие пути, атомарно переносит каталог в
+`.nexus-trash` и удаляет. Повторная команда идемпотентна.
 
 Все пути относительны workspace root. Runtime повторно проверяет:
 

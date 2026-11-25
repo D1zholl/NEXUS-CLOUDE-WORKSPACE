@@ -121,6 +121,10 @@ impl Api {
         self.ok("POST", path, Some(body)).await
     }
 
+    async fn delete(&self, path: &str) -> Value {
+        self.ok("DELETE", path, None).await
+    }
+
     async fn post_multipart(
         &self,
         path: &str,
@@ -281,6 +285,25 @@ impl FakeRuntime {
     async fn assert_no_message(&mut self, wait: Duration) {
         if let Some(envelope) = self.next(wait).await {
             panic!("неожиданное сообщение Runtime: {}", envelope.kind);
+        }
+    }
+
+    /// Проверяет, что за `wait` не пришёл `tool.execute`.
+    /// Прочие команды (heartbeat/mcp.configure) не считаются нарушением.
+    async fn assert_no_tool(&mut self, wait: Duration) {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            match self.next(remaining).await {
+                Some(envelope) if envelope.kind == "tool.execute" => {
+                    panic!("неожиданный tool.execute: {}", envelope.payload);
+                }
+                Some(_) => continue,
+                None => return,
+            }
         }
     }
 
@@ -760,6 +783,51 @@ async fn agent_executes_tool_cycle_and_records_execution() {
     let message = wait_message(&api, conversation_id, "completed").await;
     assert_eq!(message["content"], "Файл прочитан: hello");
 
+    // События: возрастающий порядок, уникальные id, инкрементальный `after`.
+    let events = api
+        .get(&format!("/api/v1/ai/tasks/{task_id}/events?perPage=200"))
+        .await;
+    let events = events["items"].as_array().unwrap();
+    assert!(!events.is_empty());
+    let ids: Vec<i64> = events
+        .iter()
+        .map(|event| event["id"].as_i64().unwrap())
+        .collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(ids, sorted, "события должны быть в возрастающем порядке");
+    let mut unique = ids.clone();
+    unique.dedup();
+    assert_eq!(unique.len(), ids.len(), "id событий уникальны");
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|event| event["kind"].as_str())
+        .collect();
+    assert!(kinds.contains(&"ai.task.started"));
+    assert!(kinds.contains(&"ai.tool.completed"));
+
+    let middle = ids[ids.len() / 2];
+    let after = api
+        .get(&format!(
+            "/api/v1/ai/tasks/{task_id}/events?after={middle}&perPage=200"
+        ))
+        .await;
+    let after_ids: Vec<i64> = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["id"].as_i64().unwrap())
+        .collect();
+    assert!(after_ids.iter().all(|id| *id > middle));
+    assert_eq!(
+        after_ids,
+        ids.iter()
+            .copied()
+            .filter(|id| *id > middle)
+            .collect::<Vec<_>>(),
+        "after возвращает ровно более новые события"
+    );
+
     server.abort();
 }
 
@@ -813,7 +881,7 @@ async fn destructive_tool_requires_approval_and_is_bound_to_arguments() {
 
     let task = wait_task(&api, task_id, "waiting_approval").await;
     assert_eq!(task["status"], "waiting_approval");
-    runtime.assert_no_message(Duration::from_millis(400)).await;
+    runtime.assert_no_tool(Duration::from_millis(400)).await;
 
     let pending = api.get("/api/v1/ai/approvals/pending").await;
     let approvals = pending["items"].as_array().unwrap();
@@ -1378,6 +1446,496 @@ async fn workspace_usage_is_reported_by_runtime() {
 }
 
 #[tokio::test]
+async fn workspace_soft_delete_is_restorable_and_dry_run_has_no_side_effects() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin_id = env.create_user("lifecycleadmin", "SecretPass1!").await;
+    api.login("lifecycleadmin", "SecretPass1!").await.unwrap();
+    let (mut runtime, node_id) = setup_runtime(&env, &api).await;
+    setup_provider(&api, node_id).await;
+    let workspace_id = setup_workspace(&env, &api, node_id, admin_id, vec!["fs.read"]).await;
+    let original_name: String = sqlx::query_scalar("select name from ai_workspaces where id = $1")
+        .bind(workspace_id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+
+    let deleted = api
+        .delete(&format!("/api/v1/ai/workspaces/{workspace_id}"))
+        .await;
+    assert!(deleted["deletedAt"].is_string() || deleted["deleted"].as_bool() == Some(true));
+    let (state, purge_after, original): (String, chrono::DateTime<chrono::Utc>, String) =
+        sqlx::query_as(
+            "select state, purge_after, original_name
+               from ai_workspace_lifecycle where workspace_id = $1",
+        )
+        .bind(workspace_id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "soft_deleted");
+    assert_eq!(original, original_name);
+    assert!(purge_after > chrono::Utc::now() + chrono::Duration::days(20));
+
+    let deleted_list = api.get("/api/v1/ai/workspaces/deleted").await;
+    assert!(
+        deleted_list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["workspaceId"] == workspace_id.to_string())
+    );
+
+    // Dry-run видит созревшую запись, но ничего не удаляет и не меняет state.
+    sqlx::query("update ai_workspace_lifecycle set purge_after = now() where workspace_id = $1")
+        .bind(workspace_id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let dry = api.get("/api/v1/ai/admin/workspaces/purge/dry-run").await;
+    assert_eq!(dry["dryRun"], true);
+    assert!(
+        dry["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["workspaceId"] == workspace_id.to_string())
+    );
+    let still: String =
+        sqlx::query_scalar("select state from ai_workspace_lifecycle where workspace_id = $1")
+            .bind(workspace_id)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(still, "soft_deleted");
+
+    let restore_path = format!("/api/v1/ai/workspaces/{workspace_id}/restore");
+    let restore = api.post(&restore_path, json!({}));
+    let serve = async {
+        let command = runtime
+            .wait_for("workspace.usage", Duration::from_secs(10))
+            .await;
+        runtime
+            .send(
+                "workspace.usage_result",
+                Some(command.message_id),
+                None,
+                json!({
+                    "workspaceId": workspace_id,
+                    "bytes": 0,
+                    "files": 0,
+                    "checkedAt": chrono::Utc::now(),
+                    "error": null
+                }),
+            )
+            .await;
+    };
+    let (restored, ()) = tokio::join!(restore, serve);
+    assert_eq!(restored["name"], original_name);
+    assert!(restored["deletedAt"].is_null());
+    let (state, restored_at): (String, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+        "select state, restored_at from ai_workspace_lifecycle where workspace_id = $1",
+    )
+    .bind(workspace_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "restored");
+    assert!(restored_at.is_some());
+    server.abort();
+}
+
+#[tokio::test]
+async fn purge_worker_confirms_runtime_deletion_before_cleaning_records() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin_id = env.create_user("purgeadmin", "SecretPass1!").await;
+    api.login("purgeadmin", "SecretPass1!").await.unwrap();
+    let (mut runtime, node_id) = setup_runtime(&env, &api).await;
+    setup_provider(&api, node_id).await;
+    let workspace_id = setup_workspace(&env, &api, node_id, admin_id, vec!["fs.read"]).await;
+    api.delete(&format!("/api/v1/ai/workspaces/{workspace_id}"))
+        .await;
+    sqlx::query(
+        "update ai_workspace_lifecycle
+            set purge_after = now() where workspace_id = $1",
+    )
+    .bind(workspace_id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    // Файл вне workspace не должен удаляться: его удаляет Runtime, а тест
+    // проверяет только серверную часть подтверждения.
+    let marker = env.root.path().join("must-survive.txt");
+    std::fs::write(&marker, b"keep").unwrap();
+
+    let state = env.state.clone();
+    let worker = nexus::ai::workspace_lifecycle::run_due(&state, 1);
+    let serve = async {
+        let command = runtime
+            .wait_for("workspace.delete", Duration::from_secs(10))
+            .await;
+        assert_eq!(command.payload["workspaceId"], workspace_id.to_string());
+        runtime
+            .send(
+                "workspace.delete_result",
+                Some(command.message_id),
+                None,
+                json!({
+                    "workspaceId": workspace_id,
+                    "ok": true,
+                    "bytes": 1234,
+                    "files": 5,
+                    "alreadyAbsent": false,
+                    "error": null
+                }),
+            )
+            .await;
+    };
+    let (processed, ()) = tokio::join!(worker, serve);
+    assert_eq!(processed.unwrap(), 1);
+    let (state, bytes, files): (String, i64, i64) = sqlx::query_as(
+        "select state, bytes_freed, files_removed
+           from ai_workspace_lifecycle where workspace_id = $1",
+    )
+    .bind(workspace_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "purged");
+    assert_eq!((bytes, files), (1234, 5));
+    let usage: (i64, i64) =
+        sqlx::query_as("select usage_bytes, usage_files from ai_workspaces where id = $1")
+            .bind(workspace_id)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(usage, (0, 0));
+    assert!(marker.exists(), "файл вне workspace не должен удаляться");
+    let snapshots: i64 =
+        sqlx::query_scalar("select count(*) from ai_file_snapshots where workspace_id = $1")
+            .bind(workspace_id)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(snapshots, 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn purge_worker_blocks_on_unverified_ownership_and_keeps_data() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin_id = env.create_user("purgeblocked", "SecretPass1!").await;
+    api.login("purgeblocked", "SecretPass1!").await.unwrap();
+    let (mut runtime, node_id) = setup_runtime(&env, &api).await;
+    setup_provider(&api, node_id).await;
+    let workspace_id = setup_workspace(&env, &api, node_id, admin_id, vec!["fs.read"]).await;
+    api.delete(&format!("/api/v1/ai/workspaces/{workspace_id}"))
+        .await;
+    sqlx::query(
+        "update ai_workspace_lifecycle
+            set purge_after = now() where workspace_id = $1",
+    )
+    .bind(workspace_id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+
+    let state = env.state.clone();
+    let worker = nexus::ai::workspace_lifecycle::run_due(&state, 1);
+    let serve = async {
+        let command = runtime
+            .wait_for("workspace.delete", Duration::from_secs(10))
+            .await;
+        runtime
+            .send(
+                "workspace.delete_result",
+                Some(command.message_id),
+                None,
+                json!({
+                    "workspaceId": workspace_id,
+                    "ok": false,
+                    "bytes": 0,
+                    "files": 0,
+                    "alreadyAbsent": false,
+                    "error": "AI_WORKSPACE_OWNERSHIP_UNVERIFIED: чужой каталог"
+                }),
+            )
+            .await;
+    };
+    let (processed, ()) = tokio::join!(worker, serve);
+    assert_eq!(processed.unwrap(), 1);
+    let (state, error): (String, Option<String>) = sqlx::query_as(
+        "select state, last_error from ai_workspace_lifecycle where workspace_id = $1",
+    )
+    .bind(workspace_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "blocked");
+    assert!(error.unwrap().contains("OWNERSHIP_UNVERIFIED"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn concurrent_quota_reservations_cannot_exceed_workspace_limit() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin_id = env.create_user("quotaconcurrent", "SecretPass1!").await;
+    api.login("quotaconcurrent", "SecretPass1!").await.unwrap();
+    let (mut _runtime, node_id) = setup_runtime(&env, &api).await;
+    setup_provider(&api, node_id).await;
+    let workspace_id = setup_workspace(&env, &api, node_id, admin_id, vec!["fs.read"]).await;
+    sqlx::query("update ai_workspaces set quota_bytes = 1000, max_files = 10 where id = $1")
+        .bind(workspace_id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into ai_user_quotas (user_id, max_storage_bytes, max_files, max_file_bytes)
+         values ($1, 1000, 100, 16777216)
+         on conflict (user_id) do update set max_storage_bytes = 1000, max_files = 100",
+    )
+    .bind(admin_id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    let workspace = nexus::ai::workspaces::load_workspace(&env.pool, workspace_id)
+        .await
+        .unwrap();
+
+    let mut handles = Vec::new();
+    for index in 0..10 {
+        let state = env.state.clone();
+        let workspace = workspace.clone();
+        handles.push(tokio::spawn(async move {
+            nexus::ai::quota::reserve_delta(
+                &state,
+                &workspace,
+                "fs.write",
+                &format!("concurrent-{index}"),
+                200,
+                1,
+            )
+            .await
+        }));
+    }
+    let mut granted = Vec::new();
+    let mut rejected = 0;
+    for handle in handles {
+        match handle.await.unwrap() {
+            Ok(Some(reservation)) => granted.push(reservation),
+            Ok(None) => panic!("ожидался резерв"),
+            Err(error) => {
+                assert!(
+                    matches!(
+                        error.code.as_str(),
+                        "AI_STORAGE_QUOTA_EXCEEDED" | "AI_FILES_QUOTA_EXCEEDED"
+                    ),
+                    "неожиданная ошибка квоты: {error:?}"
+                );
+                rejected += 1;
+            }
+        }
+    }
+    assert_eq!(
+        granted.len(),
+        5,
+        "должно пройти ровно 5 резервов по 200 байт"
+    );
+    assert_eq!(rejected, 5);
+    let reserved: i64 = sqlx::query_scalar(
+        "select coalesce(sum(bytes), 0)::bigint from ai_quota_reservations
+          where workspace_id = $1 and status = 'active'",
+    )
+    .bind(workspace_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(reserved, 1000);
+    for reservation in granted {
+        nexus::ai::quota::release(&env.state, &reservation, "test cleanup").await;
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn quota_reservation_is_idempotent_and_expires_after_restart_window() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin_id = env.create_user("quotaidem", "SecretPass1!").await;
+    api.login("quotaidem", "SecretPass1!").await.unwrap();
+    let (_runtime, node_id) = setup_runtime(&env, &api).await;
+    setup_provider(&api, node_id).await;
+    let workspace_id = setup_workspace(&env, &api, node_id, admin_id, vec!["fs.read"]).await;
+    sqlx::query("update ai_workspaces set quota_bytes = 1000 where id = $1")
+        .bind(workspace_id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let workspace = nexus::ai::workspaces::load_workspace(&env.pool, workspace_id)
+        .await
+        .unwrap();
+
+    let first = nexus::ai::quota::reserve_delta(
+        &env.state,
+        &workspace,
+        "fs.write",
+        "same-operation",
+        700,
+        0,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let second = nexus::ai::quota::reserve_delta(
+        &env.state,
+        &workspace,
+        "fs.write",
+        "same-operation",
+        700,
+        0,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(first.id, second.id);
+    let rows: i64 = sqlx::query_scalar(
+        "select count(*) from ai_quota_reservations where operation_id = 'same-operation'",
+    )
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, 1);
+
+    let rejected = nexus::ai::quota::reserve_delta(
+        &env.state,
+        &workspace,
+        "fs.write",
+        "another-operation",
+        400,
+        0,
+    )
+    .await;
+    assert!(rejected.is_err());
+
+    sqlx::query(
+        "update ai_quota_reservations set expires_at = now() - interval '1 minute'
+          where id = $1",
+    )
+    .bind(first.id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    let (expired, _) = nexus::ai::quota::cleanup_expired(&env.state).await.unwrap();
+    assert!(expired >= 1);
+    nexus::ai::quota::reserve_delta(&env.state, &workspace, "fs.write", "after-expiry", 900, 0)
+        .await
+        .unwrap()
+        .expect("после истечения резерва место должно освободиться");
+    server.abort();
+}
+
+#[tokio::test]
+async fn quota_confirm_uses_actual_usage_and_releases_excess() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin_id = env.create_user("quotaconfirm", "SecretPass1!").await;
+    api.login("quotaconfirm", "SecretPass1!").await.unwrap();
+    let (_runtime, node_id) = setup_runtime(&env, &api).await;
+    setup_provider(&api, node_id).await;
+    let workspace_id = setup_workspace(&env, &api, node_id, admin_id, vec!["fs.read"]).await;
+    sqlx::query("update ai_workspaces set quota_bytes = 1000 where id = $1")
+        .bind(workspace_id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let workspace = nexus::ai::workspaces::load_workspace(&env.pool, workspace_id)
+        .await
+        .unwrap();
+    let reservation =
+        nexus::ai::quota::reserve_delta(&env.state, &workspace, "fs.write", "confirm-op", 900, 0)
+            .await
+            .unwrap()
+            .unwrap();
+    let usage = nexus::ai::runtime::protocol::WorkspaceUsage {
+        bytes: 100,
+        files: 1,
+        checked_at: Some(chrono::Utc::now()),
+        error: None,
+    };
+    nexus::ai::quota::confirm(env.state.as_ref(), reservation, Some(&usage))
+        .await
+        .unwrap();
+    let stored: i64 = sqlx::query_scalar("select usage_bytes from ai_workspaces where id = $1")
+        .bind(workspace_id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 100);
+    let next = nexus::ai::quota::reserve_delta(
+        &env.state,
+        &workspace,
+        "fs.write",
+        "after-confirm",
+        900,
+        0,
+    )
+    .await
+    .unwrap()
+    .expect("избыточный резерв должен быть освобождён");
+    nexus::ai::quota::release(&env.state, &next, "test").await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn quota_is_shared_across_all_workspaces_of_one_user() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin_id = env.create_user("quotashared", "SecretPass1!").await;
+    api.login("quotashared", "SecretPass1!").await.unwrap();
+    let (_runtime, node_id) = setup_runtime(&env, &api).await;
+    setup_provider(&api, node_id).await;
+    let first_id = setup_workspace(&env, &api, node_id, admin_id, vec!["fs.read"]).await;
+    let second_id = setup_workspace(&env, &api, node_id, admin_id, vec!["fs.read"]).await;
+    sqlx::query(
+        "insert into ai_user_quotas (user_id, max_storage_bytes, max_files, max_file_bytes)
+         values ($1, 1000, 1000, 16777216)
+         on conflict (user_id) do update set max_storage_bytes = 1000",
+    )
+    .bind(admin_id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    let first = nexus::ai::workspaces::load_workspace(&env.pool, first_id)
+        .await
+        .unwrap();
+    let second = nexus::ai::workspaces::load_workspace(&env.pool, second_id)
+        .await
+        .unwrap();
+    let reservation =
+        nexus::ai::quota::reserve_delta(&env.state, &first, "fs.write", "user-wide-1", 600, 0)
+            .await
+            .unwrap()
+            .unwrap();
+    let error =
+        nexus::ai::quota::reserve_delta(&env.state, &second, "fs.write", "user-wide-2", 600, 0)
+            .await
+            .unwrap_err();
+    assert_eq!(error.code, "AI_STORAGE_QUOTA_EXCEEDED");
+    nexus::ai::quota::release(&env.state, &reservation, "test").await;
+    server.abort();
+}
+
+#[tokio::test]
 async fn task_cancel_is_not_successful_without_runtime_confirmation() {
     let env = TestEnv::new().await;
     let (base, server) = start_server(&env).await;
@@ -1627,6 +2185,18 @@ async fn recovery_requeues_safe_tasks_and_keeps_pending_receipts() {
         )
         .await;
     let conversation_id = Uuid::parse_str(conversation["id"].as_str().unwrap()).unwrap();
+    let other_conversation = api
+        .post(
+            "/api/v1/ai/conversations",
+            json!({
+                "mode": "agent",
+                "model": "test-model",
+                "workspaceId": workspace_id
+            }),
+        )
+        .await;
+    let other_conversation_id =
+        Uuid::parse_str(other_conversation["id"].as_str().unwrap()).unwrap();
     let context = json!({ "messages": [], "pending": null });
 
     let queued_id: Uuid = sqlx::query_scalar(
@@ -1652,7 +2222,7 @@ async fn recovery_requeues_safe_tasks_and_keeps_pending_receipts() {
          values ($1, $2, $3, $4, 'test-model', $5, 'running', 'model', $6)
          returning id",
     )
-    .bind(conversation_id)
+    .bind(other_conversation_id)
     .bind(admin_id)
     .bind(node_id)
     .bind(provider_id)
@@ -1697,5 +2267,348 @@ async fn recovery_requeues_safe_tasks_and_keeps_pending_receipts() {
     assert_eq!(running_state.0, "running");
     assert_eq!(running_state.1.as_deref(), Some("awaiting_receipt"));
     let _ = runtime;
+    server.abort();
+}
+
+#[tokio::test]
+async fn custom_role_can_hold_ai_permissions() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    env.create_user("rbacadmin", "SecretPass1!").await;
+    api.login("rbacadmin", "SecretPass1!").await.unwrap();
+
+    let created = api
+        .post(
+            "/api/v1/roles",
+            json!({
+                "key": "ai-operator",
+                "name": "AI Operator",
+                "description": "custom role",
+                "permissions": ["ai.access", "ai.agent.use"]
+            }),
+        )
+        .await;
+    let role_id = created["id"].as_str().unwrap().to_owned();
+    let updated = api
+        .ok(
+            "PATCH",
+            &format!("/api/v1/roles/{role_id}"),
+            Some(json!({
+                "permissions": ["ai.access", "ai.agent.use", "ai.workspace.read"]
+            })),
+        )
+        .await;
+    let permissions = updated["permissions"].as_array().unwrap();
+    assert!(permissions.iter().any(|item| item == "ai.workspace.read"));
+    assert!(permissions.iter().any(|item| item == "ai.agent.use"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn legacy_workspace_tools_upgrade_is_explicit_and_additive() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut api = Api::new(&base);
+    let admin = env.create_user("wsupgrade", "SecretPass1!").await;
+    api.login("wsupgrade", "SecretPass1!").await.unwrap();
+    let (_runtime, node_id) = setup_runtime(&env, &api).await;
+
+    // Старый workspace: нет fs.stat/skills.list, но явно выдан fs.delete.
+    let legacy_tools = vec!["fs.read", "fs.write", "fs.delete", "skill.load"];
+    let workspace_id = setup_workspace(&env, &api, node_id, admin, legacy_tools.clone()).await;
+
+    let list = api.get("/api/v1/ai/admin/workspaces").await;
+    let legacy = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == json!(workspace_id))
+        .expect("legacy workspace в списке")
+        .clone();
+    let allowed: Vec<&str> = legacy["allowedTools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(!allowed.contains(&"fs.stat"));
+    assert!(!allowed.contains(&"skills.list"));
+    let missing: Vec<&str> = legacy["missingSafeTools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(missing.contains(&"fs.stat"));
+    assert!(missing.contains(&"skills.list"));
+    assert!(
+        !missing.contains(&"fs.delete"),
+        "опасные инструменты не входят в safe-набор"
+    );
+
+    // Только явная административная операция расширяет allowlist.
+    let updated = api
+        .post(
+            &format!("/api/v1/ai/admin/workspaces/{workspace_id}/tools/grant-defaults"),
+            json!({}),
+        )
+        .await;
+    let updated_tools: Vec<&str> = updated["allowedTools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(updated_tools.contains(&"fs.stat"));
+    assert!(updated_tools.contains(&"skills.list"));
+    assert!(
+        updated_tools.contains(&"fs.delete"),
+        "явные права не удаляются"
+    );
+    let mut unique = updated_tools.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), updated_tools.len(), "allowlist без дублей");
+
+    // Повторный вызов идемпотентен.
+    let again = api
+        .post(
+            &format!("/api/v1/ai/admin/workspaces/{workspace_id}/tools/grant-defaults"),
+            json!({}),
+        )
+        .await;
+    let again_tools: Vec<&str> = again["allowedTools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(again_tools.len(), updated_tools.len());
+
+    let audited: i64 = sqlx::query_scalar(
+        "select count(*) from audit_events
+          where event_type = 'ai.workspace.tools_granted' and target_id = $1",
+    )
+    .bind(workspace_id.to_string())
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1, "операция должна быть в общем журнале аудита");
+
+    // Новый workspace сразу содержит безопасный набор.
+    let fresh = api
+        .post(
+            "/api/v1/ai/admin/workspaces",
+            json!({
+                "ownerId": admin,
+                "runtimeNodeId": node_id,
+                "name": format!("Fresh {}", Uuid::new_v4().simple()),
+                "rootPath": env.root.path().join("fresh-ws").to_string_lossy(),
+                "allowedPrograms": [],
+                "maxTaskSeconds": 120
+            }),
+        )
+        .await;
+    let fresh_tools: Vec<&str> = fresh["allowedTools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(fresh_tools.contains(&"fs.stat"));
+    assert!(fresh_tools.contains(&"skills.list"));
+
+    server.abort();
+}
+
+/// Файловый API Agent Workspace: операции идут через Runtime tool, а чужой
+/// пользователь не видит workspace и не инициирует tool-команды.
+#[tokio::test]
+async fn workspace_file_api_is_owned_and_uses_runtime_tool() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut owner = Api::new(&base);
+    let owner_id = env.create_user("fileowner", "SecretPass1!").await;
+    owner.login("fileowner", "SecretPass1!").await.unwrap();
+    let (mut runtime, node_id) = setup_runtime(&env, &owner).await;
+    let workspace_id =
+        setup_workspace(&env, &owner, node_id, owner_id, vec!["fs.list", "fs.read"]).await;
+
+    let tree_path = format!("/api/v1/ai/workspaces/{workspace_id}/files?path=&depth=1");
+    let mut request = Box::pin(owner.call("GET", &tree_path, None));
+    let command = tokio::select! {
+        response = &mut request => {
+            let (status, payload) = response.unwrap();
+            panic!("HTTP-ответ без tool.execute: {status} {payload}");
+        }
+        command = runtime.wait_for("tool.execute", Duration::from_secs(10)) => command,
+    };
+    assert_eq!(command.payload["toolId"], "fs.list");
+    assert_eq!(
+        command.payload["workspaceId"],
+        json!(workspace_id.to_string())
+    );
+    runtime
+        .send(
+            "tool.completed",
+            Some(command.message_id),
+            None,
+            json!({
+                "result": {
+                    "path": ".",
+                    "entries": [{
+                        "path": "README.md",
+                        "name": "README.md",
+                        "type": "file",
+                        "size": 5,
+                        "modified": null
+                    }],
+                    "truncated": false
+                },
+                "resultText": "ok",
+                "durationMs": 1
+            }),
+        )
+        .await;
+    let (status, payload) = tokio::time::timeout(Duration::from_secs(10), request)
+        .await
+        .expect("HTTP-ответ после tool.completed")
+        .unwrap();
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(payload["data"]["entries"][0]["name"], "README.md");
+
+    let hash = nexus::auth::password::hash_password("SecretPass2!".to_owned())
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into users (username, display_name, password_hash, status)
+         values ('fileintruder', 'fileintruder', $1, 'active')",
+    )
+    .bind(hash)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into user_roles (user_id, role_id)
+         select u.id, r.id from users u, roles r
+          where u.username = 'fileintruder' and r.key = 'user'",
+    )
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    let mut intruder = Api::new(&base);
+    intruder
+        .login("fileintruder", "SecretPass2!")
+        .await
+        .unwrap();
+    let (status, payload) = intruder
+        .call(
+            "GET",
+            &format!("/api/v1/ai/workspaces/{workspace_id}/files"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status, 404,
+        "чужой workspace не должен раскрываться: {payload}"
+    );
+    runtime.assert_no_tool(Duration::from_millis(300)).await;
+
+    server.abort();
+}
+
+/// Сохранение существующего файла без baseSha256 отклоняется до записи:
+/// никакой тихой перезаписи.
+#[tokio::test]
+async fn workspace_file_save_requires_base_sha_for_existing_file() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut owner = Api::new(&base);
+    let owner_id = env.create_user("filesave", "SecretPass1!").await;
+    owner.login("filesave", "SecretPass1!").await.unwrap();
+    let (mut runtime, node_id) = setup_runtime(&env, &owner).await;
+    let workspace_id =
+        setup_workspace(&env, &owner, node_id, owner_id, vec!["fs.read", "fs.write"]).await;
+
+    let save_path = format!("/api/v1/ai/workspaces/{workspace_id}/files/content");
+    let mut request = Box::pin(owner.call(
+        "PUT",
+        &save_path,
+        Some(json!({ "path": "README.md", "content": "new" })),
+    ));
+    let command = tokio::select! {
+        response = &mut request => {
+            let (status, payload) = response.unwrap();
+            panic!("HTTP-ответ без tool.execute: {status} {payload}");
+        }
+        command = runtime.wait_for("tool.execute", Duration::from_secs(10)) => command,
+    };
+    assert_eq!(command.payload["toolId"], "fs.stat");
+    runtime
+        .send(
+            "tool.completed",
+            Some(command.message_id),
+            None,
+            json!({
+                "result": {
+                    "path": "README.md",
+                    "type": "file",
+                    "size": 7,
+                    "modified": null,
+                    "readonly": false,
+                    "symlink": false
+                },
+                "resultText": "ok",
+                "durationMs": 1
+            }),
+        )
+        .await;
+    let (status, payload) = tokio::time::timeout(Duration::from_secs(10), request)
+        .await
+        .expect("HTTP-ответ после fs.stat")
+        .unwrap();
+    assert_eq!(status, 428, "{payload}");
+    assert_eq!(payload["error"]["code"], "AI_FILE_PRECONDITION_REQUIRED");
+    // fs.write не отправлялся: следующая команда Runtime отсутствует.
+    runtime.assert_no_tool(Duration::from_millis(400)).await;
+
+    server.abort();
+}
+/// Пользовательская квота размера файла применяется backend до Runtime:
+/// запрос отклоняется, tool.execute не отправляется.
+#[tokio::test]
+async fn workspace_file_save_enforces_user_file_quota() {
+    let env = TestEnv::new().await;
+    let (base, server) = start_server(&env).await;
+    let mut owner = Api::new(&base);
+    let owner_id = env.create_user("filequota", "SecretPass1!").await;
+    owner.login("filequota", "SecretPass1!").await.unwrap();
+    let (mut runtime, node_id) = setup_runtime(&env, &owner).await;
+    let workspace_id =
+        setup_workspace(&env, &owner, node_id, owner_id, vec!["fs.read", "fs.write"]).await;
+    sqlx::query(
+        "insert into ai_user_quotas (user_id, max_file_bytes)
+         values ($1, 1)
+         on conflict (user_id) do update set max_file_bytes = 1",
+    )
+    .bind(owner_id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+
+    let (status, payload) = owner
+        .call(
+            "PUT",
+            &format!("/api/v1/ai/workspaces/{workspace_id}/files/content"),
+            Some(json!({ "path": "big.txt", "content": "xx", "baseSha256": null })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status, 507, "{payload}");
+    assert_eq!(payload["error"]["code"], "AI_USER_FILE_QUOTA_EXCEEDED");
+    runtime.assert_no_tool(Duration::from_millis(400)).await;
+
     server.abort();
 }

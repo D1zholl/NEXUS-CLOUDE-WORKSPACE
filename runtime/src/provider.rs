@@ -340,11 +340,13 @@ fn parse_completion(value: &Value) -> Result<ProviderChatCompleted> {
                 .and_then(|value| value.as_str())
                 .unwrap_or("")
                 .to_owned();
-            let arguments = function
-                .get("arguments")
-                .and_then(|value| value.as_str())
-                .unwrap_or("{}")
-                .to_owned();
+            let arguments = match function.get("arguments") {
+                Some(Value::String(value)) => value.clone(),
+                Some(value) if value.is_object() || value.is_array() => {
+                    serde_json::to_string(value).unwrap_or_else(|_| "{}".to_owned())
+                }
+                _ => "{}".to_owned(),
+            };
             tool_calls.push(ToolCall {
                 id: call
                     .get("id")
@@ -462,10 +464,15 @@ where
                         if let Some(name) = function.get("name").and_then(|value| value.as_str()) {
                             entry.1.push_str(name);
                         }
-                        if let Some(arguments) =
-                            function.get("arguments").and_then(|value| value.as_str())
-                        {
-                            entry.2.push_str(arguments);
+                        if let Some(arguments) = function.get("arguments") {
+                            let chunk = match arguments {
+                                Value::String(value) => value.clone(),
+                                value if value.is_object() || value.is_array() => {
+                                    serde_json::to_string(value).unwrap_or_default()
+                                }
+                                _ => String::new(),
+                            };
+                            entry.2.push_str(&chunk);
                         }
                     }
                 }
@@ -678,6 +685,37 @@ mod tests {
         assert!(
             !completed.content.trim().is_empty() || !completed.tool_calls.is_empty(),
             "PolyStrata вернула пустой ответ"
+        );
+    }
+}
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_object_arguments() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_obj",
+                        "type": "function",
+                        "function": {
+                            "name": "fs_read",
+                            "arguments": { "path": "a.txt" }
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        let parsed = parse_completion(&value).unwrap();
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(
+            parsed.tool_calls[0].function.arguments,
+            "{\"path\":\"a.txt\"}"
         );
     }
 }

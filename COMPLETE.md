@@ -1,6 +1,33 @@
-# Готовность NEXUS WORKSPACE 1.0.0
+# Готовность NEXUS WORKSPACE 1.0.0 / подготовка 1.1.0
 
-**Дата:** 20.11.2026.
+## 0. Статус 1.1.0 (25.11.2026)
+
+Фактически завершены и проверены на текущем коде:
+
+- **Phase 1 — жизненный цикл AI Workspace:** retention 30 дней (настраивается),
+  восстановление, фоновая физическая очистка через подтверждение Runtime,
+  ownership proof (`provisioning_root` + UUID + маркер), dry-run, retry/backoff,
+  `blocked`, очистка snapshots/usage только после `ok=true`, аудит и события.
+- **Phase 2 — транзакционные квоты:** `ai_quota_reservations` + advisory lock,
+  покрытие write/upload/copy/move/delete/mkdir/patch/program.run/MCP,
+  подтверждение фактическим usage, `uncertain` при неизвестном результате,
+  административный release, janitor.
+- Backend, Runtime и frontend собираются; clippy/fmt/typecheck/lint/build
+  проходят; backend/runtime/frontend тесты — см.
+  [`docs/reports/FINAL_TEST_REPORT.md`](docs/reports/FINAL_TEST_REPORT.md).
+
+**Не завершено и не выдаётся за готовое:** streaming snapshots больших файлов и
+рекурсивного удаления (Phase 3), `program.start/poll/stop` и терминал
+(Phase 4–5), MCP stdio (Phase 6), process-level network isolation (Phase 7),
+реальная PolyStrata/WSS/два компьютера (Phase 8), чистая установка и upgrade
+standalone (Phase 14). Чек-лист:
+[`docs/FINAL_RELEASE_CHECKLIST.md`](docs/FINAL_RELEASE_CHECKLIST.md).
+Версия 1.1.0 **не помечена тегом** и standalone не пересобран, пока эти
+обязательные проверки не выполнены.
+
+---
+
+**Дата базовой версии 1.0.0:** 20.11.2026.
 **Источник требований:** `MAIN_PLAN.md` (этапы 0–10, §17).
 **Метод:** фактические сборка и прогоны на Windows 11; установленная служба
 `NexusWorkspace`, а не только `cargo run`.
@@ -220,4 +247,36 @@ ZIP, точный live-тест остановки и операционные �
 Ограничения: полный `cargo test` без `-j 1` в этой среде прерывается
 `os error 1455` при параллельной компиляции; с `-j 1` весь набор прошёл.
 Playwright-сценарии `minecraft.spec.ts` прогнаны отдельно (2/2).
+
+---
+
+## 7. Agent Mode: стабилизация (24 ноября 2026)
+
+Выполнены оставшиеся задачи этапов 1–3 и 5–11 плана
+`NEXUS_AGENT_MODE_PLAN.md`, кроме длительных процессов (этап 4).
+
+| Пункт | Статус | Подтверждение |
+|---|---|---|
+| Совместимость старых workspace | ✅ | `missingSafeTools` + управляемое `tools/grant-defaults`; интеграционный тест |
+| Инкрементальные события | ✅ | `events?after`, дедупликация по `eventId`, sync после reconnect; unit + backend тесты |
+| Миграция 0021 | ✅ (тестовая БД) | дубли `root_path`/активные задачи останавливают миграцию; повтор идемпотентен |
+| receipts.jsonl | ✅ | ротация, failure-receipts, компактный индекс, `AI_RECEIPT_ROTATED` |
+| Retry-политика | ✅ | только идемпотентные, 2 попытки, без повтора при неизвестном результате |
+| Playwright Agent E2E | ✅ | 7 сценариев с реальным Runtime; весь набор 33 passed, 1 skipped |
+| Реальная PolyStrata | ⚠️ | сценарий `agent-real.spec.ts` подготовлен, в среде skipped |
+| Два физических ПК | ❌ | сценарий/скрипт подготовлены, прогон не выполнялся |
+| Документация | ✅ | OpenAPI 186/225, API, AI_RUNTIME, AI_WORKSPACE, SECURITY, TESTING, TWO_MACHINE_CHECK |
+| Standalone | ✅ | manifest/SHA256SUMS 0 расхождений, запуск с очищенным PATH |
+
+Тесты: backend **421 passed**, runtime **36 passed + 1 ignored**,
+frontend **112 passed**, миграции **2 passed**, OpenAPI **5 passed**,
+Playwright **33 passed / 1 skipped**, после финальной правки UI —
+дополнительно **8 passed** (`agent.spec.ts` + `ai.spec.ts`). Логи:
+`logs/agent-mode-tests-final-2.log`, `logs/agent-mode-stand-final.log`,
+`logs/e2e-full-final-2.log`, `logs/e2e-agent-final-3.log`,
+`logs/standalone-build-final-2.log`.
+
+Не реализовано и не выдаётся за готовое: `program.start/poll/stop`,
+`tool.progress`, отдельная остановка процесса; реальный двухмашинный прогон;
+проверка на отдельной чистой Windows-машине.
 

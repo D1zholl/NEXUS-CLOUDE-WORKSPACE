@@ -40,6 +40,15 @@ pub struct StorageConfig {
     pub allowed_roots: Vec<String>,
     pub log_dir: String,
     pub receipts_file: String,
+    /// Максимальный размер текущего сегмента receipts до ротации (0 — default).
+    pub receipts_max_bytes: u64,
+    /// Сколько сегментов хранить; 0 — default.
+    pub receipts_max_archives: usize,
+    /// Сколько receipts загружать в память при старте; 0 — default.
+    pub receipts_load_limit: usize,
+    /// Каталог, в котором Runtime создаёт новые workspace по команде
+    /// backend `workspace.provision`. Пусто — первый `allowed_roots`.
+    pub provisioning_root: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -63,6 +72,12 @@ pub struct LimitsConfig {
     pub default_tool_timeout_seconds: u64,
     pub env_allowlist: Vec<String>,
     pub skip_directories: Vec<String>,
+    /// Снимки файлов для diff/откатa: лимит на один файл.
+    pub snapshot_max_bytes: usize,
+    /// Суммарный лимит снимков на одну tool-операцию.
+    pub snapshot_max_total_bytes: usize,
+    /// Максимум файлов в снимках одной операции.
+    pub snapshot_max_files: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -147,6 +162,9 @@ impl Default for LimitsConfig {
                 ".venv".into(),
                 "__pycache__".into(),
             ],
+            snapshot_max_bytes: 256 * 1024,
+            snapshot_max_total_bytes: 2 * 1024 * 1024,
+            snapshot_max_files: 100,
         }
     }
 }
@@ -300,6 +318,32 @@ impl RuntimeConfig {
             } else {
                 &self.storage.receipts_file
             })
+    }
+
+    pub fn receipts_max_bytes(&self) -> u64 {
+        if self.storage.receipts_max_bytes == 0 {
+            crate::receipts::DEFAULT_MAX_BYTES
+        } else {
+            self.storage
+                .receipts_max_bytes
+                .max(crate::receipts::MIN_MAX_BYTES)
+        }
+    }
+
+    pub fn receipts_max_archives(&self) -> usize {
+        if self.storage.receipts_max_archives == 0 {
+            crate::receipts::DEFAULT_MAX_ARCHIVES
+        } else {
+            self.storage.receipts_max_archives
+        }
+    }
+
+    pub fn receipts_load_limit(&self) -> usize {
+        if self.storage.receipts_load_limit == 0 {
+            crate::receipts::DEFAULT_LOAD_LIMIT
+        } else {
+            self.storage.receipts_load_limit
+        }
     }
 
     /// Канонические разрешённые корни. Несуществующий корень — ошибка старта.

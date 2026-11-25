@@ -701,6 +701,69 @@ async fn trash_restore_and_purge() {
 }
 
 #[tokio::test]
+async fn restore_returns_file_to_original_folder_after_folder_trash() {
+    let env = TestEnv::new().await;
+    env.add_volume("cloud-trash-origin").await;
+    let user = env.create_user("trashorigin", "SecretPass1!").await;
+
+    let docs = service::create_folder(
+        &env.pool,
+        user,
+        service::CreateFolderRequest {
+            name: "Docs".to_owned(),
+            parent_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    let nested = service::create_folder(
+        &env.pool,
+        user,
+        service::CreateFolderRequest {
+            name: "Inner".to_owned(),
+            parent_id: Some(docs.id),
+        },
+    )
+    .await
+    .unwrap();
+    let file_id = upload_file(&env, user, "note.txt", b"payload").await;
+    service::update_entry(
+        &env.pool,
+        user,
+        file_id,
+        service::UpdateEntryRequest {
+            name: None,
+            parent_id: Some(Some(nested.id)),
+            starred: None,
+            strategy: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    // Удаление папки уводит в корзину всё поддерево вместе с файлом.
+    service::trash_entry(&env.pool, user, docs.id)
+        .await
+        .unwrap();
+    for id in [docs.id, nested.id, file_id] {
+        let entry = service::load_entry(&env.pool, user, id).await.unwrap();
+        assert!(entry.trashed_at.is_some());
+    }
+
+    // Одиночное восстановление файла возвращает его в исходную папку,
+    // восстанавливая цепочку предков, а не отправляя в корень.
+    let restored = service::restore_entry(&env.pool, user, file_id)
+        .await
+        .unwrap();
+    assert!(restored.trashed_at.is_none());
+    assert_eq!(restored.parent_id, Some(nested.id));
+    for id in [docs.id, nested.id] {
+        let entry = service::load_entry(&env.pool, user, id).await.unwrap();
+        assert!(entry.trashed_at.is_none(), "папка-предок восстановлена");
+    }
+}
+
+#[tokio::test]
 async fn folder_tree_and_traversal_protection() {
     let env = TestEnv::new().await;
     env.add_volume("cloud-folders").await;

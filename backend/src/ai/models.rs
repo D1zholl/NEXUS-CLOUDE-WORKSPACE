@@ -179,6 +179,8 @@ pub struct WorkspaceRow {
     pub max_process_memory_bytes: i64,
     pub usage_reported_by: Option<Uuid>,
     pub usage_error: Option<String>,
+    pub description: String,
+    pub deleted_at: Option<DateTime<Utc>>,
     pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -208,6 +210,8 @@ impl WorkspaceRow {
             "maxProcessMemoryBytes": self.max_process_memory_bytes,
             "usageReportedBy": self.usage_reported_by,
             "usageError": self.usage_error,
+            "description": self.description,
+            "deletedAt": self.deleted_at,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
         })
@@ -259,6 +263,7 @@ pub struct QuotaRow {
     pub max_tasks_per_day: i32,
     pub max_tool_calls_per_task: i32,
     pub max_task_seconds: i32,
+    pub max_iterations: i32,
     pub max_storage_bytes: i64,
     pub max_files: i32,
     pub max_file_bytes: i64,
@@ -268,7 +273,8 @@ pub struct QuotaRow {
 pub async fn load_quota(db: &sqlx::PgPool, user_id: Uuid) -> Option<QuotaRow> {
     sqlx::query_as::<_, QuotaRow>(
         "select user_id, max_concurrent_tasks, max_tasks_per_day, max_tool_calls_per_task,
-                max_task_seconds, max_storage_bytes, max_files, max_file_bytes, updated_at
+                max_task_seconds, max_iterations, max_storage_bytes, max_files, max_file_bytes,
+                updated_at
            from ai_user_quotas where user_id = $1",
     )
     .bind(user_id)
